@@ -59,6 +59,14 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
       stdio: ['ignore', 'pipe', 'pipe']
     });
     ytdlp = ytdlpProcess;
+    ffmpeg.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      // FFmpeg can close stdin while yt-dlp still has a buffered write in flight.
+      // EPIPE is expected during source teardown; handling it here prevents an
+      // otherwise unhandled stream error from terminating the whole server.
+      if (!stopped && error.code !== 'EPIPE') {
+        stderr = boundedLog(stderr, Buffer.from(error.message));
+      }
+    });
     ytdlpProcess.stdout.pipe(ffmpeg.stdin);
     ytdlpProcess.stderr.on('data', (chunk: Buffer) => {
       stderr = boundedLog(stderr, chunk);
@@ -86,6 +94,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
     stderr = boundedLog(stderr, Buffer.from(error.message));
   });
   ffmpeg.once('close', (code) => {
+    if (ytdlp?.stdout) ytdlp.stdout.unpipe(ffmpeg.stdin);
     if (ytdlp) terminateProcess(ytdlp);
     if (stopped) return;
     const message =
@@ -97,6 +106,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
     stop() {
       if (stopped) return;
       stopped = true;
+      if (ytdlp?.stdout) ytdlp.stdout.unpipe(ffmpeg.stdin);
       if (ytdlp) terminateProcess(ytdlp);
       terminateProcess(ffmpeg);
     }

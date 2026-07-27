@@ -20,10 +20,10 @@ export async function commandAvailable(command: string, args = ['-version']): Pr
 }
 
 export function terminateProcess(child: ReturnType<typeof spawn> | null): void {
-  if (!child || child.killed || child.exitCode !== null) return;
+  if (!child || child.exitCode !== null) return;
   child.kill('SIGTERM');
   const timer = setTimeout(() => {
-    if (!child.killed && child.exitCode === null) child.kill('SIGKILL');
+    if (child.exitCode === null) child.kill('SIGKILL');
   }, 1_500);
   timer.unref();
 }
