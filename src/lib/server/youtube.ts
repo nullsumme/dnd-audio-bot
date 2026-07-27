@@ -33,14 +33,13 @@ function commonArgs(): string[] {
   return args;
 }
 
-export function ytdlpStreamArgs(url: string): string[] {
+export function ytdlpMediaUrlArgs(url: string): string[] {
   return [
     ...commonArgs(),
     '--quiet',
     '--format',
     'bestaudio/best',
-    '--output',
-    '-',
+    '--get-url',
     '--',
     normalizeYouTubeUrl(url)
   ];

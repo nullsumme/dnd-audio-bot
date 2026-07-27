@@ -19,14 +19,15 @@ overlapping one-shot effects without interrupting the background mix.
 
 ```text
 YouTube URL ──► yt-dlp ──┐
-                         ├─► FFmpeg decoders ─► 20 ms PCM mixer ─► Discord voice
+                         ├─► FFmpeg decoders ─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
 Uploaded MP3 ────────────┘           ▲
                                      └─ per-source + master gain
 ```
 
 Each active source is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
-sends one raw stream through `@discordjs/voice`. YouTube loops are resolved through yt-dlp again after every
-pass so an expired signed media URL is never reused.
+encodes one Opus stream with native FFmpeg, 20 ms packets, and in-band forward error correction before
+passing it to `@discordjs/voice`. YouTube media URLs are resolved through yt-dlp and looped directly by
+FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one automatically.
 
 ## Discord setup
 
@@ -92,7 +93,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.1.2 \
+  --version 0.1.3 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com

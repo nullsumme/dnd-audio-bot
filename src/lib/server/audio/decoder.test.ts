@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 
 interface FakeChild extends EventEmitter {
   stdin: PassThrough;
@@ -38,28 +39,57 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { spawnDecoder } from './decoder';
 
-describe('spawnDecoder YouTube teardown', () => {
+describe('spawnDecoder YouTube media resolution', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     fakes.children.length = 0;
   });
 
-  it('handles a buffered EPIPE and detaches yt-dlp before stopping both processes', () => {
+  it('resolves a media URL and asks FFmpeg to loop it without restarting yt-dlp', () => {
     const callbacks = {
       onData: vi.fn(),
       onPlaying: vi.fn(),
       onEnd: vi.fn()
     };
     const decoder = spawnDecoder({ kind: 'youtube', url: 'https://youtu.be/example' }, callbacks);
-    const [ffmpeg, ytdlp] = fakes.children;
-    const unpipe = vi.spyOn(ytdlp.stdout, 'unpipe');
-    const brokenPipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    const [resolver] = fakes.children;
+    resolver.stdout.write('https://media.example/audio.webm\n');
+    resolver.exitCode = 0;
+    resolver.emit('close', 0);
 
-    expect(() => ffmpeg.stdin.emit('error', brokenPipe)).not.toThrow();
+    const ffmpeg = fakes.children[1];
+    const ffmpegArgs = vi.mocked(spawn).mock.calls[1]?.[1];
+    expect(ffmpegArgs).toEqual(
+      expect.arrayContaining([
+        '-stream_loop',
+        '-1',
+        '-re',
+        '-i',
+        'https://media.example/audio.webm'
+      ])
+    );
+
     decoder.stop();
 
-    expect(unpipe).toHaveBeenCalledWith(ffmpeg.stdin);
-    expect(ytdlp.kill).toHaveBeenCalledWith('SIGTERM');
     expect(ffmpeg.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(resolver.kill).not.toHaveBeenCalled();
+    expect(callbacks.onEnd).not.toHaveBeenCalled();
+  });
+
+  it('stops yt-dlp cleanly while it is still resolving the media URL', () => {
+    const callbacks = {
+      onData: vi.fn(),
+      onPlaying: vi.fn(),
+      onEnd: vi.fn()
+    };
+    const decoder = spawnDecoder({ kind: 'youtube', url: 'https://youtu.be/example' }, callbacks);
+    const [resolver] = fakes.children;
+
+    decoder.stop();
+    resolver.emit('close', null);
+
+    expect(resolver.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(fakes.children).toHaveLength(1);
     expect(callbacks.onEnd).not.toHaveBeenCalled();
   });
 });

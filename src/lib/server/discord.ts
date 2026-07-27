@@ -18,7 +18,22 @@ import {
 } from 'discord.js';
 import type { DiscordStatus, GuildSummary } from '$lib/types';
 import { config } from './config';
+import { spawnDiscordOpusEncoder, type DiscordOpusPipeline } from './audio/encoder';
 import type { PcmMixer } from './audio/mixer';
+
+interface DiscordAudioPipeline extends DiscordOpusPipeline {
+  inputType: StreamType;
+}
+
+type AudioPipelineFactory = (
+  mixer: PcmMixer,
+  onError: (message: string) => void
+) => DiscordAudioPipeline;
+
+const createDefaultAudioPipeline: AudioPipelineFactory = (mixer, onError) => ({
+  ...spawnDiscordOpusEncoder(mixer, onError),
+  inputType: StreamType.OggOpus
+});
 
 export class DiscordService {
   readonly client = new Client({
@@ -30,13 +45,16 @@ export class DiscordService {
       maxMissedFrames: 50
     }
   });
+  #mixer: PcmMixer;
+  #createAudioPipeline: AudioPipelineFactory;
   #connection: VoiceConnection | null = null;
+  #opusPipeline: DiscordOpusPipeline | null = null;
   #error: string | null = null;
   #started = false;
 
-  constructor(mixer: PcmMixer) {
-    const resource = createAudioResource(mixer, { inputType: StreamType.Raw });
-    this.player.play(resource);
+  constructor(mixer: PcmMixer, createAudioPipeline = createDefaultAudioPipeline) {
+    this.#mixer = mixer;
+    this.#createAudioPipeline = createAudioPipeline;
     this.player.on('error', (error) => {
       this.#error = `Discord audio player: ${error.message}`;
       console.error(this.#error);
@@ -50,11 +68,25 @@ export class DiscordService {
     });
   }
 
+  prepareAudio(): void {
+    if (this.#opusPipeline) return;
+    const pipeline = this.#createAudioPipeline(this.#mixer, (message) => {
+      this.#error = message;
+      console.error(message);
+    });
+    this.#opusPipeline = pipeline;
+    const resource = createAudioResource(pipeline.stream, {
+      inputType: pipeline.inputType
+    });
+    this.player.play(resource);
+  }
+
   async start(): Promise<void> {
     if (this.#started || !config.discordToken) return;
     this.#started = true;
     try {
       await this.client.login(config.discordToken);
+      this.prepareAudio();
       this.#error = null;
     } catch (error) {
       this.#started = false;
@@ -109,6 +141,7 @@ export class DiscordService {
 
   async connect(channelId: string): Promise<DiscordStatus> {
     if (!this.client.isReady()) throw new Error('The Discord bot is not ready.');
+    this.prepareAudio();
     const channel = await this.client.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildVoice) {
       throw new Error('Choose a Discord voice channel visible to the bot.');
@@ -153,7 +186,9 @@ export class DiscordService {
 
   async shutdown(): Promise<void> {
     this.disconnect();
-    this.player.stop();
+    this.player.stop(true);
+    this.#opusPipeline?.stop();
+    this.#opusPipeline = null;
     this.client.destroy();
   }
 

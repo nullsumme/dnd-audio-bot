@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { config } from '../config';
 import { terminateProcess } from '../process';
-import { ytdlpStreamArgs } from '../youtube';
+import { ytdlpMediaUrlArgs } from '../youtube';
 
 export type DecoderInput =
   { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string };
@@ -22,91 +22,103 @@ function boundedLog(current: string, chunk: Buffer): string {
 
 export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): DecoderHandle {
   let stopped = false;
-  let ffmpeg: ChildProcessWithoutNullStreams;
+  let ffmpeg: ChildProcessWithoutNullStreams | null = null;
   let ytdlp: ChildProcess | null = null;
   let stderr = '';
 
-  const ffmpegInputArgs =
-    input.kind === 'file'
-      ? [...(input.loop ? ['-stream_loop', '-1'] : []), '-re', '-i', input.path]
-      : ['-re', '-i', 'pipe:0'];
+  const startFfmpeg = (ffmpegInputArgs: string[]) => {
+    if (stopped) return;
+    const process: ChildProcessWithoutNullStreams = spawn(
+      config.ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'warning',
+        ...ffmpegInputArgs,
+        '-map',
+        '0:a:0',
+        '-vn',
+        '-ac',
+        '2',
+        '-ar',
+        '48000',
+        '-acodec',
+        'pcm_s16le',
+        '-f',
+        's16le',
+        'pipe:1'
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    ffmpeg = process;
+    process.stdin.end();
 
-  ffmpeg = spawn(
-    config.ffmpegPath,
-    [
-      '-hide_banner',
-      '-loglevel',
-      'warning',
-      ...ffmpegInputArgs,
-      '-map',
-      '0:a:0',
-      '-vn',
-      '-ac',
-      '2',
-      '-ar',
-      '48000',
-      '-acodec',
-      'pcm_s16le',
-      '-f',
-      's16le',
-      'pipe:1'
-    ],
-    { stdio: ['pipe', 'pipe', 'pipe'] }
-  );
-
-  if (input.kind === 'youtube') {
-    const ytdlpProcess = spawn(config.ytdlpPath, ytdlpStreamArgs(input.url), {
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
-    ytdlp = ytdlpProcess;
-    ffmpeg.stdin.on('error', (error: NodeJS.ErrnoException) => {
-      // FFmpeg can close stdin while yt-dlp still has a buffered write in flight.
-      // EPIPE is expected during source teardown; handling it here prevents an
-      // otherwise unhandled stream error from terminating the whole server.
-      if (!stopped && error.code !== 'EPIPE') {
-        stderr = boundedLog(stderr, Buffer.from(error.message));
+    let announcedPlaying = false;
+    process.stdout.on('data', (chunk: Buffer) => {
+      if (!announcedPlaying) {
+        announcedPlaying = true;
+        callbacks.onPlaying();
       }
+      callbacks.onData(chunk);
     });
-    ytdlpProcess.stdout.pipe(ffmpeg.stdin);
-    ytdlpProcess.stderr.on('data', (chunk: Buffer) => {
+    process.stderr.on('data', (chunk: Buffer) => {
       stderr = boundedLog(stderr, chunk);
     });
-    ytdlpProcess.once('error', (error) => {
+    process.once('error', (error) => {
       stderr = boundedLog(stderr, Buffer.from(error.message));
-      terminateProcess(ffmpeg);
+    });
+    process.once('close', (code) => {
+      if (ffmpeg === process) ffmpeg = null;
+      if (stopped) return;
+      const message =
+        code === 0 ? null : stderr.trim() || `FFmpeg exited with code ${code ?? 'unknown'}.`;
+      callbacks.onEnd(message);
+    });
+  };
+
+  if (input.kind === 'youtube') {
+    const resolver = spawn(config.ytdlpPath, ytdlpMediaUrlArgs(input.url), {
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    ytdlp = resolver;
+    let mediaUrlOutput = '';
+    resolver.stdout.on('data', (chunk: Buffer) => {
+      mediaUrlOutput = boundedLog(mediaUrlOutput, chunk);
+    });
+    resolver.stderr.on('data', (chunk: Buffer) => {
+      stderr = boundedLog(stderr, chunk);
+    });
+    resolver.once('error', (error) => {
+      stderr = boundedLog(stderr, Buffer.from(error.message));
+    });
+    resolver.once('close', (code) => {
+      if (ytdlp === resolver) ytdlp = null;
+      if (stopped) return;
+      if (code !== 0) {
+        callbacks.onEnd(
+          stderr.trim() || `yt-dlp exited with code ${code ?? 'unknown'} while resolving media.`
+        );
+        return;
+      }
+
+      const mediaUrl = mediaUrlOutput
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
+      if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+        callbacks.onEnd('yt-dlp did not return a playable HTTP media URL.');
+        return;
+      }
+      startFfmpeg(['-stream_loop', '-1', '-re', '-i', mediaUrl]);
     });
   } else {
-    ffmpeg.stdin.end();
+    startFfmpeg([...(input.loop ? ['-stream_loop', '-1'] : []), '-re', '-i', input.path]);
   }
-
-  let announcedPlaying = false;
-  ffmpeg.stdout.on('data', (chunk: Buffer) => {
-    if (!announcedPlaying) {
-      announcedPlaying = true;
-      callbacks.onPlaying();
-    }
-    callbacks.onData(chunk);
-  });
-  ffmpeg.stderr.on('data', (chunk: Buffer) => {
-    stderr = boundedLog(stderr, chunk);
-  });
-  ffmpeg.once('error', (error) => {
-    stderr = boundedLog(stderr, Buffer.from(error.message));
-  });
-  ffmpeg.once('close', (code) => {
-    if (ytdlp?.stdout) ytdlp.stdout.unpipe(ffmpeg.stdin);
-    if (ytdlp) terminateProcess(ytdlp);
-    if (stopped) return;
-    const message =
-      code === 0 ? null : stderr.trim() || `FFmpeg exited with code ${code ?? 'unknown'}.`;
-    callbacks.onEnd(message);
-  });
 
   return {
     stop() {
       if (stopped) return;
       stopped = true;
-      if (ytdlp?.stdout) ytdlp.stdout.unpipe(ffmpeg.stdin);
       if (ytdlp) terminateProcess(ytdlp);
       terminateProcess(ffmpeg);
     }
