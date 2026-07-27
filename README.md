@@ -25,9 +25,10 @@ Uploaded MP3 ────────────┘           ▲
 ```
 
 Each active source is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
-encodes one Opus stream with native FFmpeg, 20 ms packets, and in-band forward error correction before
-passing it to `@discordjs/voice`. YouTube media URLs are resolved through yt-dlp and looped directly by
-FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one automatically.
+encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
+a 200 ms packet buffer before passing it to `@discordjs/voice`. YouTube media URLs are resolved through
+yt-dlp and looped directly by FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one
+automatically.
 
 ## Discord setup
 
@@ -93,7 +94,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.1.3 \
+  --version 0.1.4 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com

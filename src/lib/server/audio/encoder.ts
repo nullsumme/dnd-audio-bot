@@ -3,6 +3,9 @@ import type { Readable } from 'node:stream';
 import { config } from '../config';
 import { terminateProcess } from '../process';
 
+export const DISCORD_OPUS_BITRATE = 64_000;
+export const DISCORD_OPUS_BUFFER_MILLISECONDS = 200;
+
 export const DISCORD_OPUS_ARGS = [
   '-hide_banner',
   '-loglevel',
@@ -21,7 +24,9 @@ export const DISCORD_OPUS_ARGS = [
   '-c:a',
   'libopus',
   '-b:a',
-  '128k',
+  `${DISCORD_OPUS_BITRATE}`,
+  '-vbr',
+  'constrained',
   '-application',
   'audio',
   '-frame_duration',
@@ -33,7 +38,7 @@ export const DISCORD_OPUS_ARGS = [
   '-f',
   'ogg',
   '-page_duration',
-  '20000',
+  `${DISCORD_OPUS_BUFFER_MILLISECONDS * 1_000}`,
   'pipe:1'
 ] as const;
 

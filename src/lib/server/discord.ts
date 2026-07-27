@@ -18,7 +18,12 @@ import {
 } from 'discord.js';
 import type { DiscordStatus, GuildSummary } from '$lib/types';
 import { config } from './config';
-import { spawnDiscordOpusEncoder, type DiscordOpusPipeline } from './audio/encoder';
+import {
+  DISCORD_OPUS_BITRATE,
+  DISCORD_OPUS_BUFFER_MILLISECONDS,
+  spawnDiscordOpusEncoder,
+  type DiscordOpusPipeline
+} from './audio/encoder';
 import type { PcmMixer } from './audio/mixer';
 
 interface DiscordAudioPipeline extends DiscordOpusPipeline {
@@ -97,6 +102,11 @@ export class DiscordService {
 
   status(): DiscordStatus {
     const channel = this.#connectedChannel();
+    const playerState = this.player.state;
+    const playerPlaybackMilliseconds =
+      'playbackDuration' in playerState ? playerState.playbackDuration : 0;
+    const resourcePlaybackMilliseconds =
+      'resource' in playerState ? playerState.resource.playbackDuration : 0;
     return {
       configured: Boolean(config.discordToken),
       ready: this.client.isReady(),
@@ -107,11 +117,23 @@ export class DiscordService {
       guildName: channel?.guild.name ?? null,
       channelId: channel?.id ?? null,
       channelName: channel?.name ?? null,
-      playerState: this.player.state.status,
+      playerState: playerState.status,
       playableConnections: this.player.playable.length,
       subscribed:
         this.#connection?.state.status !== VoiceConnectionStatus.Destroyed &&
         Boolean(this.#connection?.state.subscription),
+      audioDiagnostics: {
+        encoder: 'ffmpeg/libopus',
+        bitrate: DISCORD_OPUS_BITRATE,
+        bufferMilliseconds: DISCORD_OPUS_BUFFER_MILLISECONDS,
+        missedFrames: 'missedFrames' in playerState ? playerState.missedFrames : 0,
+        fillerFrames: Math.max(
+          0,
+          Math.round((playerPlaybackMilliseconds - resourcePlaybackMilliseconds) / 20)
+        ),
+        playerPlaybackMilliseconds,
+        resourcePlaybackMilliseconds
+      },
       error: this.#error
     };
   }

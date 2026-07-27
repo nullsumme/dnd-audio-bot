@@ -56,6 +56,15 @@ export interface DiscordStatus {
   playerState: 'idle' | 'buffering' | 'playing' | 'paused' | 'autopaused';
   playableConnections: number;
   subscribed: boolean;
+  audioDiagnostics: {
+    encoder: 'ffmpeg/libopus';
+    bitrate: number;
+    bufferMilliseconds: number;
+    missedFrames: number;
+    fillerFrames: number;
+    playerPlaybackMilliseconds: number;
+    resourcePlaybackMilliseconds: number;
+  };
   error: string | null;
 }
 

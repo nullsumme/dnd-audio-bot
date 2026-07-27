@@ -50,6 +50,15 @@
       playerState: 'idle',
       playableConnections: 0,
       subscribed: false,
+      audioDiagnostics: {
+        encoder: 'ffmpeg/libopus',
+        bitrate: 64_000,
+        bufferMilliseconds: 200,
+        missedFrames: 0,
+        fillerFrames: 0,
+        playerPlaybackMilliseconds: 0,
+        resourcePlaybackMilliseconds: 0
+      },
       error: null
     },
     guilds: [],

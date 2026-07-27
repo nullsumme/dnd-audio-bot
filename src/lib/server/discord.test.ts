@@ -27,7 +27,13 @@ describe('DiscordService audio player', () => {
     expect(service.status()).toMatchObject({
       playerState: 'autopaused',
       playableConnections: 0,
-      subscribed: false
+      subscribed: false,
+      audioDiagnostics: {
+        encoder: 'ffmpeg/libopus',
+        bitrate: 64_000,
+        bufferMilliseconds: 200,
+        missedFrames: 0
+      }
     });
   });
 });
