@@ -14,16 +14,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 FROM node:24-bookworm-slim AS ytdlp
 ARG YTDLP_VERSION=2026.07.04
-ARG TARGETARCH
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl \
-    && case "${TARGETARCH}" in \
-      amd64) YTDLP_ASSET=yt-dlp_linux ;; \
-      arm64) YTDLP_ASSET=yt-dlp_linux_aarch64 ;; \
-      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
+    && apt-get install --yes --no-install-recommends ca-certificates curl python3-minimal \
     && curl --fail --location --show-error \
-      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${YTDLP_ASSET}" \
+      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" \
       --output /yt-dlp \
     && chmod 0755 /yt-dlp \
     && /yt-dlp --version \
@@ -31,7 +25,7 @@ RUN apt-get update \
 
 FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg tini \
+    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg python3-minimal tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 soundkeep \
     && useradd --uid 10001 --gid soundkeep --home-dir /app --shell /usr/sbin/nologin soundkeep \
