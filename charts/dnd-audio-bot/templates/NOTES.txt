@@ -1,0 +1,15 @@
+Soundkeep is installed.
+
+The Discord token is read from Secret {{ .Values.discord.existingSecret | quote }},
+key {{ .Values.discord.tokenKey | quote }}.
+
+{{- if .Values.ingress.enabled }}
+Dashboard:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+{{- else }}
+Port-forward the dashboard:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "dnd-audio-bot.fullname" . }} 3000:{{ .Values.service.port }}
+  open http://127.0.0.1:3000
+{{- end }}

@@ -1,0 +1,23 @@
+services:
+  soundkeep:
+    build:
+      context: .
+    image: dnd-audio-bot:local
+    restart: unless-stopped
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN in .env}
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
+      BODY_SIZE_LIMIT: 256M
+      MAX_ACTIVE_SOURCES: 16
+    ports:
+      - '3000:3000'
+    volumes:
+      - soundkeep-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  soundkeep-data:

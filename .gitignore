@@ -1,0 +1,13 @@
+node_modules
+.svelte-kit
+build
+.env
+.env.*
+!.env.example
+data
+coverage
+playwright-report
+test-results
+.playwright-data
+*.tgz
+.DS_Store

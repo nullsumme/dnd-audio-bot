@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dnd-audio-bot.fullname" . }}
+  labels:
+    {{- include "dnd-audio-bot.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "dnd-audio-bot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/discord-secret-name: {{ .Values.discord.existingSecret | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "dnd-audio-bot.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: soundkeep
+          image: {{ include "dnd-audio-bot.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "discord.existingSecret is required" .Values.discord.existingSecret }}
+                  key: {{ .Values.discord.tokenKey }}
+            - { name: DATA_DIR, value: /data }
+            - { name: BODY_SIZE_LIMIT, value: 256M }
+            - { name: MAX_ACTIVE_SOURCES, value: {{ .Values.audio.maxActiveSources | quote }} }
+            - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
+            - { name: XDG_CACHE_HOME, value: /data/.cache }
+            {{- if .Values.ytdlp.existingCookiesSecret }}
+            - { name: YTDLP_COOKIES_FILE, value: /var/run/soundkeep-ytdlp/cookies.txt }
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            {{- if .Values.ytdlp.existingCookiesSecret }}
+            - { name: ytdlp-cookies, mountPath: /var/run/soundkeep-ytdlp, readOnly: true }
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "dnd-audio-bot.pvcName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 128Mi
+        {{- if .Values.ytdlp.existingCookiesSecret }}
+        - name: ytdlp-cookies
+          secret:
+            secretName: {{ .Values.ytdlp.existingCookiesSecret }}
+            items:
+              - key: {{ .Values.ytdlp.cookiesKey }}
+                path: cookies.txt
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

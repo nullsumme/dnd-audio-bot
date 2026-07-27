@@ -1,0 +1,54 @@
+{
+  "name": "dnd-audio-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A self-hosted Discord ambience mixer and soundboard for tabletop sessions.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "lint": "prettier --check .",
+    "format": "prettier --write .",
+    "helm:lint": "helm lint charts/dnd-audio-bot"
+  },
+  "dependencies": {
+    "@discordjs/voice": "0.19.2",
+    "@snazzah/davey": "0.1.12",
+    "clsx": "2.1.1",
+    "discord.js": "14.27.0",
+    "opusscript": "0.0.8",
+    "@lucide/svelte": "1.27.0",
+    "tailwind-merge": "3.6.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "5.5.7",
+    "@sveltejs/kit": "2.70.1",
+    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "26.1.1",
+    "@playwright/test": "1.62.0",
+    "prettier": "3.9.6",
+    "prettier-plugin-svelte": "4.1.1",
+    "prettier-plugin-tailwindcss": "0.8.1",
+    "svelte": "5.56.8",
+    "svelte-check": "4.7.4",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "cookie": "0.7.2"
+  }
+}
