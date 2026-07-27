@@ -14,10 +14,16 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 FROM node:24-bookworm-slim AS ytdlp
 ARG YTDLP_VERSION=2026.07.04
+ARG TARGETARCH
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && case "${TARGETARCH}" in \
+      amd64) YTDLP_ASSET=yt-dlp_linux ;; \
+      arm64) YTDLP_ASSET=yt-dlp_linux_aarch64 ;; \
+      *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
     && curl --fail --location --show-error \
-      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" \
+      "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${YTDLP_ASSET}" \
       --output /yt-dlp \
     && chmod 0755 /yt-dlp \
     && /yt-dlp --version \
