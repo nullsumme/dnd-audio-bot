@@ -53,6 +53,9 @@ export interface DiscordStatus {
   guildName: string | null;
   channelId: string | null;
   channelName: string | null;
+  playerState: 'idle' | 'buffering' | 'playing' | 'paused' | 'autopaused';
+  playableConnections: number;
+  subscribed: boolean;
   error: string | null;
 }
 

@@ -25,7 +25,10 @@ export class DiscordService {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates]
   });
   readonly player = createAudioPlayer({
-    behaviors: { noSubscriber: NoSubscriberBehavior.Play }
+    behaviors: {
+      noSubscriber: NoSubscriberBehavior.Pause,
+      maxMissedFrames: 50
+    }
   });
   #connection: VoiceConnection | null = null;
   #error: string | null = null;
@@ -72,6 +75,11 @@ export class DiscordService {
       guildName: channel?.guild.name ?? null,
       channelId: channel?.id ?? null,
       channelName: channel?.name ?? null,
+      playerState: this.player.state.status,
+      playableConnections: this.player.playable.length,
+      subscribed:
+        this.#connection?.state.status !== VoiceConnectionStatus.Destroyed &&
+        Boolean(this.#connection?.state.subscription),
       error: this.#error
     };
   }
@@ -115,11 +123,17 @@ export class DiscordService {
       selfMute: false
     });
     this.#connection = connection;
-    connection.subscribe(this.player);
+    const subscription = connection.subscribe(this.player);
+    if (!subscription) {
+      connection.destroy();
+      this.#connection = null;
+      throw new Error('Discord rejected the audio-player subscription.');
+    }
     this.#watchConnection(connection, channel.guild);
 
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      await entersState(this.player, AudioPlayerStatus.Playing, 5_000);
       this.#error = null;
       return this.status();
     } catch {

@@ -47,6 +47,9 @@
       guildName: null,
       channelId: null,
       channelName: null,
+      playerState: 'idle',
+      playableConnections: 0,
+      subscribed: false,
       error: null
     },
     guilds: [],
