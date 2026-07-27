@@ -15,7 +15,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 FROM node:24-bookworm-slim AS ytdlp
 ARG YTDLP_VERSION=2026.07.04
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl python3-minimal \
+    && apt-get install --yes --no-install-recommends ca-certificates curl python3 \
     && curl --fail --location --show-error \
       "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" \
       --output /yt-dlp \
@@ -25,7 +25,7 @@ RUN apt-get update \
 
 FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg python3-minimal tini \
+    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg python3 tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 soundkeep \
     && useradd --uid 10001 --gid soundkeep --home-dir /app --shell /usr/sbin/nologin soundkeep \
