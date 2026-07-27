@@ -7,6 +7,19 @@ export const SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_MILLISECONDS * CHANNELS) /
 export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
 export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 25;
 export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME * 10;
+export const MAX_CATCH_UP_FRAMES = 10;
+
+export interface MixerScheduler {
+  now(): number;
+  setTimeout(callback: () => void, delay: number): object;
+  clearTimeout(timer: object): void;
+}
+
+const realtimeScheduler: MixerScheduler = {
+  now: () => performance.now(),
+  setTimeout: (callback, delay) => setTimeout(callback, delay),
+  clearTimeout: (timer) => clearTimeout(timer as NodeJS.Timeout)
+};
 
 interface MixerInput {
   buffer: Buffer;
@@ -33,10 +46,13 @@ export function mixPcmFrames(frames: Array<{ frame: Buffer; volume: number }>, m
 export class PcmMixer extends Readable {
   #inputs = new Map<string, MixerInput>();
   #masterVolume = 0.8;
-  #timer: NodeJS.Timeout | null = null;
+  #scheduler: MixerScheduler;
+  #timer: object | null = null;
+  #nextFrameAt: number | null = null;
 
-  constructor() {
+  constructor(scheduler: MixerScheduler = realtimeScheduler) {
     super({ highWaterMark: BYTES_PER_FRAME * 10 });
+    this.#scheduler = scheduler;
   }
 
   get masterVolume(): number {
@@ -82,17 +98,49 @@ export class PcmMixer extends Readable {
 
   override _read(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.#emitFrame(), FRAME_MILLISECONDS);
+    if (this.#nextFrameAt === null) this.#nextFrameAt = this.#scheduler.now() + FRAME_MILLISECONDS;
+    this.#scheduleFrame();
   }
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
-    if (this.#timer) clearInterval(this.#timer);
+    if (this.#timer) this.#scheduler.clearTimeout(this.#timer);
     this.#timer = null;
+    this.#nextFrameAt = null;
     this.#inputs.clear();
     callback(error);
   }
 
-  #emitFrame(): void {
+  #scheduleFrame(): void {
+    if (this.#timer || this.#nextFrameAt === null) return;
+    const delay = Math.max(0, this.#nextFrameAt - this.#scheduler.now());
+    this.#timer = this.#scheduler.setTimeout(() => this.#onTimer(), delay);
+  }
+
+  #onTimer(): void {
+    const now = this.#scheduler.now();
+    let emitted = 0;
+    let flowing = true;
+
+    while (
+      flowing &&
+      this.#nextFrameAt !== null &&
+      this.#nextFrameAt <= now &&
+      emitted < MAX_CATCH_UP_FRAMES
+    ) {
+      flowing = this.#emitFrame();
+      this.#nextFrameAt += FRAME_MILLISECONDS;
+      emitted += 1;
+    }
+
+    this.#timer = null;
+    if (!flowing) {
+      this.#nextFrameAt = null;
+      return;
+    }
+    this.#scheduleFrame();
+  }
+
+  #emitFrame(): boolean {
     const frames: Array<{ frame: Buffer; volume: number }> = [];
     for (const input of this.#inputs.values()) {
       const frame = Buffer.alloc(BYTES_PER_FRAME);
@@ -108,9 +156,6 @@ export class PcmMixer extends Readable {
       }
     }
 
-    if (!this.push(mixPcmFrames(frames, this.#masterVolume)) && this.#timer) {
-      clearInterval(this.#timer);
-      this.#timer = null;
-    }
+    return this.push(mixPcmFrames(frames, this.#masterVolume));
   }
 }

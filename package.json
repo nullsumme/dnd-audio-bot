@@ -1,6 +1,6 @@
 {
   "name": "dnd-audio-bot",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "A self-hosted Discord ambience mixer and soundboard for tabletop sessions.",
