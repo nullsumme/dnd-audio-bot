@@ -29,6 +29,8 @@ encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band fo
 a 200 ms packet buffer before passing it to `@discordjs/voice`. YouTube media URLs are resolved through
 yt-dlp and looped directly by FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one
 automatically.
+Per-source PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
+old samples when its real-time clock runs slightly ahead of the mixer.
 The production image uses yt-dlp's Python zipapp instead of its self-extracting binary, avoiding large
 per-process `/tmp` allocations when several URLs are started close together.
 
@@ -96,7 +98,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.1.5 \
+  --version 0.1.6 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com

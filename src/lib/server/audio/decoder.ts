@@ -7,12 +7,13 @@ export type DecoderInput =
   { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string };
 
 export interface DecoderCallbacks {
-  onData(chunk: Buffer): void;
+  onData(chunk: Buffer): boolean;
   onPlaying(): void;
   onEnd(error: string | null): void;
 }
 
 export interface DecoderHandle {
+  resume(): void;
   stop(): void;
 }
 
@@ -59,7 +60,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
         announcedPlaying = true;
         callbacks.onPlaying();
       }
-      callbacks.onData(chunk);
+      if (!callbacks.onData(chunk)) process.stdout.pause();
     });
     process.stderr.on('data', (chunk: Buffer) => {
       stderr = boundedLog(stderr, chunk);
@@ -116,6 +117,9 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
   }
 
   return {
+    resume() {
+      ffmpeg?.stdout.resume();
+    },
     stop() {
       if (stopped) return;
       stopped = true;

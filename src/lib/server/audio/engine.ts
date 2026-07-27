@@ -133,7 +133,7 @@ export class AudioEngine {
       restartTimer: null
     };
     this.#sources.set(id, source);
-    this.mixer.addInput(id, source.public.volume);
+    this.mixer.addInput(id, source.public.volume, () => source.decoder?.resume());
     this.#spawn(source);
     return { ...source.public };
   }
@@ -145,7 +145,7 @@ export class AudioEngine {
 
     source.decoder = spawnDecoder(source.input, {
       onData: (chunk) => {
-        if (source.generation === generation) this.mixer.append(source.public.id, chunk);
+        return source.generation === generation && this.mixer.append(source.public.id, chunk);
       },
       onPlaying: () => {
         if (source.generation === generation) source.public.state = 'playing';

@@ -5,11 +5,14 @@ export const CHANNELS = 2;
 export const FRAME_MILLISECONDS = 20;
 export const SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_MILLISECONDS * CHANNELS) / 1_000;
 export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
-const MAX_BUFFER_BYTES = BYTES_PER_FRAME * 100;
+export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 25;
+export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME * 10;
 
 interface MixerInput {
   buffer: Buffer;
   volume: number;
+  backpressured: boolean;
+  onDrain: () => void;
 }
 
 export function mixPcmFrames(frames: Array<{ frame: Buffer; volume: number }>, master = 1): Buffer {
@@ -44,10 +47,12 @@ export class PcmMixer extends Readable {
     this.#masterVolume = Math.max(0, Math.min(1, volume));
   }
 
-  addInput(id: string, volume: number): void {
+  addInput(id: string, volume: number, onDrain: () => void = () => {}): void {
     this.#inputs.set(id, {
       buffer: Buffer.alloc(0),
-      volume: Math.max(0, Math.min(1, volume))
+      volume: Math.max(0, Math.min(1, volume)),
+      backpressured: false,
+      onDrain
     });
   }
 
@@ -60,13 +65,19 @@ export class PcmMixer extends Readable {
     if (input) input.volume = Math.max(0, Math.min(1, volume));
   }
 
-  append(id: string, chunk: Buffer): void {
+  append(id: string, chunk: Buffer): boolean {
     const input = this.#inputs.get(id);
-    if (!input || chunk.length === 0) return;
+    if (!input || chunk.length === 0) return false;
     input.buffer = Buffer.concat([input.buffer, chunk]);
-    if (input.buffer.length > MAX_BUFFER_BYTES) {
-      input.buffer = input.buffer.subarray(input.buffer.length - MAX_BUFFER_BYTES);
+    if (input.buffer.length >= INPUT_HIGH_WATERMARK_BYTES) {
+      input.backpressured = true;
+      return false;
     }
+    return true;
+  }
+
+  bufferedBytes(id: string): number {
+    return this.#inputs.get(id)?.buffer.length ?? 0;
   }
 
   override _read(): void {
@@ -91,6 +102,10 @@ export class PcmMixer extends Readable {
         input.buffer = input.buffer.subarray(available);
       }
       frames.push({ frame, volume: input.volume });
+      if (input.backpressured && input.buffer.length <= INPUT_LOW_WATERMARK_BYTES) {
+        input.backpressured = false;
+        input.onDrain();
+      }
     }
 
     if (!this.push(mixPcmFrames(frames, this.#masterVolume)) && this.#timer) {

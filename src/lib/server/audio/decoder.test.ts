@@ -92,4 +92,20 @@ describe('spawnDecoder YouTube media resolution', () => {
     expect(fakes.children).toHaveLength(1);
     expect(callbacks.onEnd).not.toHaveBeenCalled();
   });
+
+  it('pauses FFmpeg output on mixer backpressure and resumes on demand', () => {
+    const callbacks = {
+      onData: vi.fn(() => false),
+      onPlaying: vi.fn(),
+      onEnd: vi.fn()
+    };
+    const decoder = spawnDecoder({ kind: 'file', path: '/data/forest.mp3', loop: true }, callbacks);
+    const [ffmpeg] = fakes.children;
+
+    ffmpeg.stdout.emit('data', Buffer.alloc(4_096));
+    expect(ffmpeg.stdout.isPaused()).toBe(true);
+
+    decoder.resume();
+    expect(ffmpeg.stdout.isPaused()).toBe(false);
+  });
 });

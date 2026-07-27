@@ -4,10 +4,11 @@ import type { AudioAsset } from '$lib/types';
 interface CapturedDecoder {
   input: { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string };
   callbacks: {
-    onData(chunk: Buffer): void;
+    onData(chunk: Buffer): boolean;
     onPlaying(): void;
     onEnd(error: string | null): void;
   };
+  resumed: number;
   stopped: boolean;
 }
 
@@ -19,10 +20,13 @@ vi.mock('./decoder', () => ({
   spawnDecoder: (
     input: CapturedDecoder['input'],
     callbacks: CapturedDecoder['callbacks']
-  ): { stop(): void } => {
-    const decoder: CapturedDecoder = { input, callbacks, stopped: false };
+  ): { resume(): void; stop(): void } => {
+    const decoder: CapturedDecoder = { input, callbacks, resumed: 0, stopped: false };
     captured.decoders.push(decoder);
     return {
+      resume() {
+        decoder.resumed += 1;
+      },
       stop() {
         decoder.stopped = true;
       }
@@ -31,6 +35,7 @@ vi.mock('./decoder', () => ({
 }));
 
 import { AudioEngine } from './engine';
+import { BYTES_PER_FRAME, INPUT_HIGH_WATERMARK_BYTES } from './mixer';
 
 function asset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
   const timestamp = '2026-07-27T00:00:00.000Z';
@@ -129,5 +134,20 @@ describe('AudioEngine source lifecycle', () => {
     expect(engine.stopByAsset(shared.id)).toBe(2);
     expect(engine.list()).toMatchObject([{ origin: 'youtube', label: 'Rain' }]);
     expect(captured.decoders.slice(0, 2).every((decoder) => decoder.stopped)).toBe(true);
+  });
+
+  it('backpressures a decoder without dropping buffered PCM and resumes after draining', async () => {
+    vi.useFakeTimers();
+    engine.playAsset(asset('Forest', 'ambience'), '/data/forest.mp3', 'ambience');
+    const decoder = captured.decoders[0];
+    const pcm = Buffer.alloc(INPUT_HIGH_WATERMARK_BYTES + BYTES_PER_FRAME);
+
+    expect(decoder.callbacks.onData(pcm)).toBe(false);
+    expect(engine.mixer.bufferedBytes(engine.list()[0].id)).toBe(pcm.length);
+
+    engine.mixer.resume();
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(decoder.resumed).toBe(1);
   });
 });
