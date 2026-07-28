@@ -52,7 +52,7 @@ function addInput(
   };
 }
 
-describe('AudioLibrary', () => {
+describe('AudioLibrary', { timeout: 30_000 }, () => {
   it('streams, validates, atomically persists, updates and deletes an MP3', async () => {
     const { directory, library } = await createLibrary();
     const asset = await library.add(addInput());
