@@ -17,8 +17,12 @@
     },
     "audio": {
       "type": "object",
+      "required": ["maxUploadBytes", "maxLibraryBytes", "minFreeBytes", "maxConcurrentUploads"],
       "properties": {
-        "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" }
+        "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" },
+        "maxLibraryBytes": { "type": "string", "pattern": "^[0-9]+$" },
+        "minFreeBytes": { "type": "string", "pattern": "^[0-9]+$" },
+        "maxConcurrentUploads": { "type": "integer", "minimum": 1, "maximum": 8 }
       }
     },
     "persistence": {

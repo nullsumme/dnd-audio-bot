@@ -5,10 +5,11 @@ export const CHANNELS = 2;
 export const FRAME_MILLISECONDS = 20;
 export const SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_MILLISECONDS * CHANNELS) / 1_000;
 export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
-export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 25;
-export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME * 10;
-export const MAX_CATCH_UP_FRAMES = 10;
+export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 3;
+export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME;
 export const MIX_BUS_HEADROOM = 0.98;
+export const MAX_MIX_LINES = 2;
+export const MIX_LINE_GAIN = MIX_BUS_HEADROOM / MAX_MIX_LINES;
 
 export interface MixerScheduler {
   now(): number;
@@ -26,7 +27,16 @@ interface MixerInput {
   buffer: Buffer;
   volume: number;
   backpressured: boolean;
+  ended: boolean;
+  partialDeferred: boolean;
   onDrain: () => void;
+  onFinished: (() => void) | null;
+}
+
+export interface MixerDiagnostics {
+  partialFramesDeferred: number;
+  finalPartialFramesPadded: number;
+  staleFramesDropped: number;
 }
 
 export function mixPcmFrames(frames: Array<{ frame: Buffer; volume: number }>, master = 1): Buffer {
@@ -35,11 +45,10 @@ export function mixPcmFrames(frames: Array<{ frame: Buffer; volume: number }>, m
 
   const safeMaster = Math.max(0, Math.min(1, master));
   const volumes = frames.map((input) => Math.max(0, Math.min(1, input.volume)));
-  const summedVolume = volumes.reduce((sum, volume) => sum + volume, 0);
-  // Reserve clean headroom before converting the summed bus back to signed
-  // 16-bit PCM. This is a distortion-free gain adjustment and adds no
-  // lookahead latency; hard clipping remains only as a defensive last resort.
-  const mixGain = summedVolume > 0 ? Math.min(safeMaster, MIX_BUS_HEADROOM / summedVolume) : 0;
+  // Soundkeep has exactly two mix lines. Reserving a fixed half-bus for each line
+  // prevents clipping without changing the background gain when a sound effect
+  // starts or ends. The fixed gain is zero-lookahead and therefore adds no delay.
+  const mixGain = safeMaster * MIX_LINE_GAIN;
 
   for (let offset = 0; offset < BYTES_PER_FRAME; offset += 2) {
     let sample = 0;
@@ -58,6 +67,11 @@ export class PcmMixer extends Readable {
   #scheduler: MixerScheduler;
   #timer: object | null = null;
   #nextFrameAt: number | null = null;
+  #diagnostics: MixerDiagnostics = {
+    partialFramesDeferred: 0,
+    finalPartialFramesPadded: 0,
+    staleFramesDropped: 0
+  };
 
   constructor(scheduler: MixerScheduler = realtimeScheduler) {
     super({ highWaterMark: BYTES_PER_FRAME * 10 });
@@ -66,6 +80,10 @@ export class PcmMixer extends Readable {
 
   get masterVolume(): number {
     return this.#masterVolume;
+  }
+
+  get diagnostics(): MixerDiagnostics {
+    return { ...this.#diagnostics };
   }
 
   setMasterVolume(volume: number): void {
@@ -77,7 +95,10 @@ export class PcmMixer extends Readable {
       buffer: Buffer.alloc(0),
       volume: Math.max(0, Math.min(1, volume)),
       backpressured: false,
-      onDrain
+      ended: false,
+      partialDeferred: false,
+      onDrain,
+      onFinished: null
     });
   }
 
@@ -92,12 +113,22 @@ export class PcmMixer extends Readable {
 
   append(id: string, chunk: Buffer): boolean {
     const input = this.#inputs.get(id);
-    if (!input || chunk.length === 0) return false;
+    if (!input || input.ended || chunk.length === 0) return false;
     input.buffer = Buffer.concat([input.buffer, chunk]);
+    if (input.buffer.length >= BYTES_PER_FRAME) input.partialDeferred = false;
     if (input.buffer.length >= INPUT_HIGH_WATERMARK_BYTES) {
       input.backpressured = true;
       return false;
     }
+    return true;
+  }
+
+  endInput(id: string, onFinished: () => void = () => {}): boolean {
+    const input = this.#inputs.get(id);
+    if (!input || input.ended) return false;
+    input.ended = true;
+    input.onFinished = onFinished;
+    if (input.buffer.length === 0) this.#finishInput(input);
     return true;
   }
 
@@ -127,44 +158,78 @@ export class PcmMixer extends Readable {
 
   #onTimer(): void {
     const now = this.#scheduler.now();
-    let emitted = 0;
-    let flowing = true;
-
-    while (
-      flowing &&
-      this.#nextFrameAt !== null &&
-      this.#nextFrameAt <= now &&
-      emitted < MAX_CATCH_UP_FRAMES
-    ) {
-      flowing = this.#emitFrame();
-      this.#nextFrameAt += FRAME_MILLISECONDS;
-      emitted += 1;
-    }
+    const deadline = this.#nextFrameAt;
+    if (deadline === null) return;
+    const missedFrames = Math.floor(Math.max(0, now - deadline) / FRAME_MILLISECONDS);
+    if (missedFrames > 0) this.#dropStaleFrames(missedFrames);
+    const flowing = this.#emitFrame();
 
     this.#timer = null;
     if (!flowing) {
       this.#nextFrameAt = null;
       return;
     }
+    this.#nextFrameAt = missedFrames > 0 ? now + FRAME_MILLISECONDS : deadline + FRAME_MILLISECONDS;
     this.#scheduleFrame();
   }
 
   #emitFrame(): boolean {
     const frames: Array<{ frame: Buffer; volume: number }> = [];
+    const finished: Array<() => void> = [];
     for (const input of this.#inputs.values()) {
-      const frame = Buffer.alloc(BYTES_PER_FRAME);
-      const available = Math.min(BYTES_PER_FRAME, input.buffer.length);
-      if (available > 0) {
-        input.buffer.copy(frame, 0, 0, available);
-        input.buffer = input.buffer.subarray(available);
+      if (input.buffer.length >= BYTES_PER_FRAME) {
+        const frame = input.buffer.subarray(0, BYTES_PER_FRAME);
+        input.buffer = input.buffer.subarray(BYTES_PER_FRAME);
+        input.partialDeferred = false;
         frames.push({ frame, volume: input.volume });
+      } else if (input.ended && input.buffer.length > 0) {
+        const frame = Buffer.alloc(BYTES_PER_FRAME);
+        input.buffer.copy(frame);
+        input.buffer = Buffer.alloc(0);
+        input.partialDeferred = false;
+        this.#diagnostics.finalPartialFramesPadded += 1;
+        frames.push({ frame, volume: input.volume });
+      } else if (input.buffer.length > 0 && !input.partialDeferred) {
+        input.partialDeferred = true;
+        this.#diagnostics.partialFramesDeferred += 1;
       }
-      if (input.backpressured && input.buffer.length <= INPUT_LOW_WATERMARK_BYTES) {
-        input.backpressured = false;
-        input.onDrain();
+
+      this.#releaseBackpressure(input);
+      if (input.ended && input.buffer.length === 0 && input.onFinished) {
+        const callback = input.onFinished;
+        input.onFinished = null;
+        finished.push(callback);
       }
     }
 
-    return this.push(mixPcmFrames(frames, this.#masterVolume));
+    const flowing = this.push(mixPcmFrames(frames, this.#masterVolume));
+    finished.forEach((callback) => callback());
+    return flowing;
+  }
+
+  #dropStaleFrames(missedFrames: number): void {
+    for (const input of this.#inputs.values()) {
+      const availableFrames = input.ended
+        ? Math.ceil(input.buffer.length / BYTES_PER_FRAME)
+        : Math.floor(input.buffer.length / BYTES_PER_FRAME);
+      const droppedFrames = Math.min(missedFrames, Math.max(0, availableFrames - 1));
+      if (droppedFrames === 0) continue;
+      input.buffer = input.buffer.subarray(droppedFrames * BYTES_PER_FRAME);
+      input.partialDeferred = false;
+      this.#diagnostics.staleFramesDropped += droppedFrames;
+      this.#releaseBackpressure(input);
+    }
+  }
+
+  #releaseBackpressure(input: MixerInput): void {
+    if (!input.backpressured || input.buffer.length > INPUT_LOW_WATERMARK_BYTES) return;
+    input.backpressured = false;
+    input.onDrain();
+  }
+
+  #finishInput(input: MixerInput): void {
+    const callback = input.onFinished;
+    input.onFinished = null;
+    callback?.();
   }
 }

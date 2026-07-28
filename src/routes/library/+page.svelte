@@ -60,12 +60,11 @@
       soundkeep.showError(new Error('Choose an MP3 file first.'));
       return;
     }
-    const form = new FormData();
-    form.set('file', uploadFile);
-    form.set('name', uploadName);
-    form.set('category', uploadCategory);
-    form.set('role', uploadRole);
-    const completed = await soundkeep.uploadAsset(form, uploadName || uploadFile.name);
+    const completed = await soundkeep.uploadAsset(
+      uploadFile,
+      { name: uploadName, category: uploadCategory, role: uploadRole },
+      uploadName || uploadFile.name
+    );
     if (completed) {
       uploadFile = null;
       uploadName = '';

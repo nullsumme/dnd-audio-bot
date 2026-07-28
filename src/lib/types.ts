@@ -59,6 +59,9 @@ export interface DiscordStatus {
     packetizationMilliseconds: number;
     missedFrames: number;
     fillerFrames: number;
+    partialFramesDeferred: number;
+    finalPartialFramesPadded: number;
+    staleFramesDropped: number;
     playerPlaybackMilliseconds: number;
     resourcePlaybackMilliseconds: number;
   };

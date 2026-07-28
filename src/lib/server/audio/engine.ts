@@ -9,8 +9,12 @@ interface RuntimeSource {
   shouldLoop: boolean;
   decoder: DecoderHandle | null;
   generation: number;
+  restartAttempts: number;
   restartTimer: NodeJS.Timeout | null;
 }
+
+export const MAX_AMBIENCE_RESTARTS = 3;
+export const AMBIENCE_RETRY_DELAY_MILLISECONDS = 1_000;
 
 function clampVolume(value: number): number {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0.7));
@@ -19,6 +23,8 @@ function clampVolume(value: number): number {
 export class AudioEngine {
   readonly mixer = new PcmMixer();
   #sources = new Map<string, RuntimeSource>();
+  #roleBarriers = new Map<AssetRole, Promise<void>>();
+  #destroyed = false;
 
   list(): ActiveSource[] {
     return [...this.#sources.values()]
@@ -58,11 +64,8 @@ export class AudioEngine {
   stop(id: string): boolean {
     const source = this.#sources.get(id);
     if (!source) return false;
-    this.#sources.delete(id);
-    source.generation += 1;
-    if (source.restartTimer) clearTimeout(source.restartTimer);
-    source.decoder?.stop();
-    this.mixer.removeInput(id);
+    const stopping = this.#detach(source);
+    this.#extendRoleBarrier(source.public.role, [stopping]);
     return true;
   }
 
@@ -83,6 +86,7 @@ export class AudioEngine {
   }
 
   destroy(): void {
+    this.#destroyed = true;
     this.stopScope('all');
     this.mixer.destroy();
   }
@@ -97,7 +101,14 @@ export class AudioEngine {
   }): ActiveSource {
     // Soundkeep deliberately exposes exactly two mix lines. Starting a source replaces
     // the current source on that line without disturbing playback on the other line.
-    this.stopScope(input.role);
+    // Decoder termination is asynchronous, so the new decoder waits behind the role's
+    // stop barrier. Rapid replacements coalesce because superseded pending sources
+    // fail the identity check before they ever spawn FFmpeg.
+    const previous = [...this.#sources.values()].filter(
+      (source) => source.public.role === input.role
+    );
+    const stopping = previous.map((source) => this.#detach(source));
+    const pendingBarrier = this.#roleBarriers.get(input.role);
     const id = randomUUID();
     const source: RuntimeSource = {
       public: {
@@ -113,15 +124,25 @@ export class AudioEngine {
       shouldLoop: input.shouldLoop,
       decoder: null,
       generation: 0,
+      restartAttempts: 0,
       restartTimer: null
     };
     this.#sources.set(id, source);
-    this.mixer.addInput(id, source.public.volume, () => source.decoder?.resume());
-    this.#spawn(source);
+    this.#addMixerInput(source);
+
+    if (!pendingBarrier && stopping.length === 0) {
+      this.#spawn(source);
+    } else {
+      const ready = this.#extendRoleBarrier(input.role, stopping);
+      void ready.then(() => {
+        if (!this.#destroyed && this.#sources.get(id) === source) this.#spawn(source);
+      });
+    }
     return { ...source.public };
   }
 
   #spawn(source: RuntimeSource): void {
+    if (this.#destroyed || this.#sources.get(source.public.id) !== source) return;
     const generation = ++source.generation;
     source.public.state = source.public.state === 'restarting' ? 'restarting' : 'starting';
     delete source.public.error;
@@ -137,28 +158,75 @@ export class AudioEngine {
         if (source.generation !== generation || !this.#sources.has(source.public.id)) return;
         source.decoder = null;
         if (!source.shouldLoop) {
-          if (error) {
-            source.public.state = 'failed';
-            source.public.error = error;
-            const cleanup = setTimeout(() => this.stop(source.public.id), 5_000);
-            cleanup.unref();
-          } else {
-            this.stop(source.public.id);
-          }
+          this.#finishOneShot(source, error);
           return;
         }
-
-        source.public.state = 'restarting';
-        if (error) source.public.error = error;
-        source.restartTimer = setTimeout(
-          () => {
-            source.restartTimer = null;
-            if (this.#sources.has(source.public.id)) this.#spawn(source);
-          },
-          error ? 3_000 : 500
-        );
-        source.restartTimer.unref();
+        this.#handleAmbienceEnd(source, error);
       }
     });
+  }
+
+  #finishOneShot(source: RuntimeSource, error: string | null): void {
+    if (error) {
+      source.public.state = 'failed';
+      source.public.error = error;
+    }
+    const finish = () => {
+      if (this.#sources.get(source.public.id) !== source) return;
+      if (!error) {
+        this.stop(source.public.id);
+        return;
+      }
+      const cleanup = setTimeout(() => this.stop(source.public.id), 5_000);
+      cleanup.unref();
+      source.restartTimer = cleanup;
+    };
+    if (!this.mixer.endInput(source.public.id, finish)) finish();
+  }
+
+  #handleAmbienceEnd(source: RuntimeSource, error: string | null): void {
+    this.mixer.removeInput(source.public.id);
+    const message = error ?? 'The ambience decoder ended unexpectedly.';
+    if (source.restartAttempts >= MAX_AMBIENCE_RESTARTS) {
+      source.public.state = 'failed';
+      source.public.error = message;
+      return;
+    }
+
+    source.restartAttempts += 1;
+    source.public.state = 'restarting';
+    source.public.error = message;
+    source.restartTimer = setTimeout(() => {
+      source.restartTimer = null;
+      if (this.#sources.get(source.public.id) !== source) return;
+      this.#addMixerInput(source);
+      this.#spawn(source);
+    }, AMBIENCE_RETRY_DELAY_MILLISECONDS);
+    source.restartTimer.unref();
+  }
+
+  #addMixerInput(source: RuntimeSource): void {
+    this.mixer.addInput(source.public.id, source.public.volume, () => source.decoder?.resume());
+  }
+
+  #detach(source: RuntimeSource): Promise<void> {
+    this.#sources.delete(source.public.id);
+    source.generation += 1;
+    if (source.restartTimer) clearTimeout(source.restartTimer);
+    source.restartTimer = null;
+    const decoder = source.decoder;
+    source.decoder = null;
+    this.mixer.removeInput(source.public.id);
+    return decoder?.stop().catch(() => undefined) ?? Promise.resolve();
+  }
+
+  #extendRoleBarrier(role: AssetRole, stopping: Promise<void>[]): Promise<void> {
+    const previous = this.#roleBarriers.get(role) ?? Promise.resolve();
+    const barrier = Promise.all([previous, ...stopping]).then(() => undefined);
+    this.#roleBarriers.set(role, barrier);
+    void barrier.then(() => {
+      if (this.#roleBarriers.get(role) === barrier) this.#roleBarriers.delete(role);
+    });
+    return barrier;
   }
 }

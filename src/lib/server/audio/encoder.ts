@@ -48,7 +48,19 @@ export const DISCORD_OPUS_ARGS = [
 
 export interface DiscordOpusPipeline {
   stream: Readable;
-  stop(): void;
+  stop(): Promise<void>;
+}
+
+export interface DiscordOpusEncoderClose {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  expected: boolean;
+  message: string | null;
+}
+
+export interface DiscordOpusEncoderLifecycle {
+  onError(message: string): void;
+  onClose(event: DiscordOpusEncoderClose): void;
 }
 
 function boundedLog(current: string, chunk: Buffer): string {
@@ -57,38 +69,55 @@ function boundedLog(current: string, chunk: Buffer): string {
 
 export function spawnDiscordOpusEncoder(
   input: Readable,
-  onError: (message: string) => void
+  lifecycle: DiscordOpusEncoderLifecycle
 ): DiscordOpusPipeline {
   let stopped = false;
   let stderr = '';
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
   const ffmpeg: ChildProcessWithoutNullStreams = spawn(config.ffmpegPath, [...DISCORD_OPUS_ARGS], {
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
   input.pipe(ffmpeg.stdin);
   ffmpeg.stdin.on('error', (error: NodeJS.ErrnoException) => {
-    if (!stopped && error.code !== 'EPIPE') onError(`Discord Opus encoder: ${error.message}`);
+    if (!stopped && error.code !== 'EPIPE')
+      lifecycle.onError(`Discord Opus encoder: ${error.message}`);
   });
   ffmpeg.stderr.on('data', (chunk: Buffer) => {
     stderr = boundedLog(stderr, chunk);
   });
   ffmpeg.once('error', (error) => {
-    if (!stopped) onError(`Discord Opus encoder: ${error.message}`);
+    if (!stopped) lifecycle.onError(`Discord Opus encoder: ${error.message}`);
   });
-  ffmpeg.once('close', (code) => {
+  ffmpeg.once('close', (code, signal) => {
     input.unpipe(ffmpeg.stdin);
-    if (!stopped && code !== 0) {
-      onError(stderr.trim() || `Discord Opus encoder exited with code ${code ?? 'unknown'}.`);
+    try {
+      lifecycle.onClose({
+        code,
+        signal,
+        expected: stopped,
+        message:
+          code === 0
+            ? null
+            : stderr.trim() || `Discord Opus encoder exited with code ${code ?? 'unknown'}.`
+      });
+    } finally {
+      resolveClosed();
     }
   });
 
   return {
     stream: ffmpeg.stdout,
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      input.unpipe(ffmpeg.stdin);
-      terminateProcess(ffmpeg);
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        input.unpipe(ffmpeg.stdin);
+        terminateProcess(ffmpeg);
+      }
+      await closed;
     }
   };
 }

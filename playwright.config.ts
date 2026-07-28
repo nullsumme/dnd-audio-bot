@@ -10,7 +10,7 @@ export default defineConfig({
   },
   webServer: {
     command:
-      'env DATA_DIR=.playwright-data HOST=127.0.0.1 PORT=4173 ORIGIN=http://127.0.0.1:4173 node build',
+      'env DATA_DIR=.playwright-data HOST=127.0.0.1 PORT=4173 ORIGIN=http://127.0.0.1:4173 FFMPEG_PATH=tests/fixtures/media-validator.mjs FFPROBE_PATH=tests/fixtures/media-validator.mjs node build',
     url: 'http://127.0.0.1:4173/api/health/live',
     reuseExistingServer: true,
     timeout: 30_000

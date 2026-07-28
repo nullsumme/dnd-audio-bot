@@ -12,5 +12,8 @@ export const config = {
   dataDir: resolve(process.env.DATA_DIR?.trim() || './data'),
   ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
   ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
-  maxUploadBytes: positiveInteger('MAX_UPLOAD_BYTES', 250 * 1024 * 1024)
+  maxUploadBytes: positiveInteger('MAX_UPLOAD_BYTES', 250 * 1024 * 1024),
+  maxLibraryBytes: positiveInteger('MAX_LIBRARY_BYTES', 8 * 1024 * 1024 * 1024),
+  minFreeBytes: positiveInteger('MIN_FREE_BYTES', 256 * 1024 * 1024),
+  maxConcurrentUploads: positiveInteger('MAX_CONCURRENT_UPLOADS', 1)
 } as const;

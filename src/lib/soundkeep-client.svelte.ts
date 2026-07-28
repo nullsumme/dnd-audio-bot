@@ -22,6 +22,9 @@ const emptyState: ApplicationState = {
       packetizationMilliseconds: 20,
       missedFrames: 0,
       fillerFrames: 0,
+      partialFramesDeferred: 0,
+      finalPartialFramesPadded: 0,
+      staleFramesDropped: 0,
       playerPlaybackMilliseconds: 0,
       resourcePlaybackMilliseconds: 0
     },
@@ -181,10 +184,25 @@ export class SoundkeepClient {
     }).catch((error) => this.showError(error));
   }
 
-  async uploadAsset(form: FormData, displayName: string) {
+  async uploadAsset(
+    file: File,
+    input: { name: string; category: string; role: AssetRole },
+    displayName: string
+  ) {
+    const query = new URLSearchParams({
+      filename: file.name,
+      name: input.name,
+      category: input.category,
+      role: input.role
+    });
     return this.run(
       'upload',
-      () => this.request('/api/library', { method: 'POST', body: form }),
+      () =>
+        this.request(`/api/library?${query}`, {
+          method: 'POST',
+          headers: { 'content-type': 'audio/mpeg' },
+          body: file
+        }),
       `${displayName} was added to the library.`
     );
   }
