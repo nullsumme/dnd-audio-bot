@@ -10,8 +10,8 @@ one soundboard clip that plays without interrupting the background.
 - Selects one looping background track from the library.
 - Plays configured soundboard buttons over the uninterrupted background; a new button replaces the current
   soundboard clip.
-- Stores live YouTube entries, downloaded YouTube MP3s, and uploaded MP3s in one managed library.
-- Uploads, downloads, previews, renames, categorizes, reassigns, searches, and deletes audio assets.
+- Stores uploaded MP3s in one managed local library.
+- Uploads, previews, renames, categorizes, reassigns, searches, and deletes audio assets.
 - Adds and removes soundboard buttons without deleting their library assets.
 - Persists the audio library on one data volume.
 - Supports Discord's required DAVE voice encryption.
@@ -20,22 +20,18 @@ one soundboard clip that plays without interrupting the background.
 ## How audio flows
 
 ```text
-Background (live YouTube or local MP3) ─┐
-                                       ├─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
-Soundboard (live YouTube or local MP3) ─┘          ▲
-                                                   └─ per-line + master gain
+Background MP3 ─┐
+                ├─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
+Soundboard MP3 ─┘          ▲
+                            └─ per-line + master gain
 ```
 
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
 encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
-a 200 ms packet buffer before passing it to `@discordjs/voice`. YouTube media URLs are resolved through
-yt-dlp and looped directly by FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one
-automatically.
+a single-frame 20 ms Ogg page that is flushed immediately before passing it to `@discordjs/voice`.
 Per-line PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
 old samples when its real-time clock runs slightly ahead of the mixer. A monotonic, deadline-based mixer
 clock compensates for delayed JavaScript timers instead of accumulating gaps in the outgoing stream.
-The production image uses yt-dlp's Python zipapp instead of its self-extracting binary, avoiding large
-per-process `/tmp` allocations when several URLs are started close together.
 
 ## Discord setup
 
@@ -57,12 +53,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>. Uploaded and downloaded files plus their metadata live in the
-`soundkeep-data` volume.
-
-Only `youtube.com` and `youtu.be` HTTPS URLs are accepted. Some age-restricted videos require a Netscape
-cookie file; set `YTDLP_COOKIES_FILE` to its mounted path when needed. Use only audio you are allowed to play
-and comply with YouTube's terms.
+Open <http://localhost:3000>. Uploaded files and their metadata live in the `soundkeep-data` volume.
 
 ## Native development
 
@@ -70,7 +61,6 @@ Requirements:
 
 - Node.js 22.12 or newer
 - FFmpeg and FFprobe
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) with a Node.js JavaScript runtime
 
 ```bash
 cp .env.example .env
@@ -102,7 +92,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.2.1 \
+  --version 0.3.0 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -113,16 +103,14 @@ voice connection and one writable library volume.
 
 ## Configuration
 
-| Variable             |                    Default | Purpose                                                      |
-| -------------------- | -------------------------: | ------------------------------------------------------------ |
-| `DISCORD_BOT_TOKEN`  |                   required | Bot token from the Developer Portal                          |
-| `DATA_DIR`           |                   `./data` | Library index and uploaded/downloaded MP3 directory          |
-| `FFMPEG_PATH`        |                   `ffmpeg` | FFmpeg executable                                            |
-| `FFPROBE_PATH`       |                  `ffprobe` | FFprobe executable                                           |
-| `YTDLP_PATH`         |                   `yt-dlp` | yt-dlp executable                                            |
-| `YTDLP_COOKIES_FILE` |                      unset | Optional Netscape-format cookie file                         |
-| `MAX_UPLOAD_BYTES`   |                `262144000` | MP3 upload limit                                             |
-| `ORIGIN`             | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
+| Variable            |                    Default | Purpose                                                      |
+| ------------------- | -------------------------: | ------------------------------------------------------------ |
+| `DISCORD_BOT_TOKEN` |                   required | Bot token from the Developer Portal                          |
+| `DATA_DIR`          |                   `./data` | Library index and uploaded MP3 directory                     |
+| `FFMPEG_PATH`       |                   `ffmpeg` | FFmpeg executable                                            |
+| `FFPROBE_PATH`      |                  `ffprobe` | FFprobe executable                                           |
+| `MAX_UPLOAD_BYTES`  |                `262144000` | MP3 upload limit                                             |
+| `ORIGIN`            | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
 
 The application itself does not provide user accounts. Put it behind an authenticated reverse proxy when it
 is reachable by anyone other than trusted game masters.

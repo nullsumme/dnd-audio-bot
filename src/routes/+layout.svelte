@@ -205,7 +205,6 @@
                 {/if}
                 {#if !soundkeep.state.capabilities.ffprobe}FFprobe is unavailable.
                 {/if}
-                {#if !soundkeep.state.capabilities.ytdlp}yt-dlp is unavailable.{/if}
               </Alert.Description>
             </Alert.Root>
           </div>

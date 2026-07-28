@@ -1,6 +1,4 @@
 export type AssetRole = 'ambience' | 'soundboard';
-export type AudioAssetType = 'youtube-live' | 'youtube-saved' | 'mp3';
-export type SourceOrigin = 'youtube' | 'library';
 export type SourceState = 'starting' | 'playing' | 'restarting' | 'failed';
 
 export interface AudioAsset {
@@ -8,11 +6,9 @@ export interface AudioAsset {
   name: string;
   category: string;
   role: AssetRole;
-  sourceType: AudioAssetType;
-  filename: string | null;
-  originalFilename: string | null;
-  mimeType: 'audio/mpeg' | null;
-  youtubeUrl: string | null;
+  filename: string;
+  originalFilename: string;
+  mimeType: 'audio/mpeg';
   size: number;
   duration: number | null;
   createdAt: string;
@@ -22,13 +18,11 @@ export interface AudioAsset {
 export interface ActiveSource {
   id: string;
   label: string;
-  origin: SourceOrigin;
   role: AssetRole;
   volume: number;
   state: SourceState;
   startedAt: string;
   assetId?: string;
-  url?: string;
   error?: string;
 }
 
@@ -62,7 +56,7 @@ export interface DiscordStatus {
   audioDiagnostics: {
     encoder: 'ffmpeg/libopus';
     bitrate: number;
-    bufferMilliseconds: number;
+    packetizationMilliseconds: number;
     missedFrames: number;
     fillerFrames: number;
     playerPlaybackMilliseconds: number;
@@ -80,6 +74,5 @@ export interface ApplicationState {
   capabilities: {
     ffmpeg: boolean;
     ffprobe: boolean;
-    ytdlp: boolean;
   };
 }

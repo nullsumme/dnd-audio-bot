@@ -20,7 +20,7 @@ import type { DiscordStatus, GuildSummary } from '$lib/types';
 import { config } from './config';
 import {
   DISCORD_OPUS_BITRATE,
-  DISCORD_OPUS_BUFFER_MILLISECONDS,
+  DISCORD_OPUS_PAGE_MILLISECONDS,
   spawnDiscordOpusEncoder,
   type DiscordOpusPipeline
 } from './audio/encoder';
@@ -124,7 +124,7 @@ export class DiscordService {
       audioDiagnostics: {
         encoder: 'ffmpeg/libopus',
         bitrate: DISCORD_OPUS_BITRATE,
-        bufferMilliseconds: DISCORD_OPUS_BUFFER_MILLISECONDS,
+        packetizationMilliseconds: DISCORD_OPUS_PAGE_MILLISECONDS,
         missedFrames: 'missedFrames' in playerState ? playerState.missedFrames : 0,
         fillerFrames: Math.max(
           0,
@@ -176,18 +176,19 @@ export class DiscordService {
       selfMute: false
     });
     this.#connection = connection;
-    this.prepareAudio();
-    const subscription = connection.subscribe(this.player);
-    if (!subscription) {
-      connection.destroy();
-      this.#connection = null;
-      this.#disposeAudio();
-      throw new Error('Discord rejected the audio-player subscription.');
-    }
     this.#watchConnection(connection, channel.guild);
 
+    let failureMessage = `Could not connect to #${channel.name}. Check the bot's Connect and Speak permissions.`;
     try {
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+      // Starting the encoder before the socket is playable would buffer silence
+      // produced during the Discord voice handshake.
+      this.prepareAudio();
+      const subscription = connection.subscribe(this.player);
+      if (!subscription) {
+        failureMessage = 'Discord rejected the audio-player subscription.';
+        throw new Error(failureMessage);
+      }
       await entersState(this.player, AudioPlayerStatus.Playing, 5_000);
       this.#error = null;
       return this.status();
@@ -195,7 +196,7 @@ export class DiscordService {
       connection.destroy();
       if (this.#connection === connection) this.#connection = null;
       this.#disposeAudio();
-      this.#error = `Could not connect to #${channel.name}. Check the bot's Connect and Speak permissions.`;
+      this.#error = failureMessage;
       throw new Error(this.#error);
     }
   }

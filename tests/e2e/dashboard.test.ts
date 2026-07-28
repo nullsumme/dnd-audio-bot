@@ -67,9 +67,8 @@ test('supports the desktop dashboard navigation and audio workflow', async ({ pa
 
   await libraryNav.click();
   await expect(page).toHaveURL(/\/library$/);
-  await page.getByRole('tab', { name: 'YouTube' }).click();
-  await expect(page.getByRole('radio', { name: 'Live stream' })).toBeVisible();
-  await expect(page.getByRole('radio', { name: 'Save MP3' })).toBeVisible();
+  await expect(page.locator('#audio-upload')).toBeVisible();
+  await expect(page.getByRole('tab')).toHaveCount(0);
 
   await settingsNav.click();
   await expect(page).toHaveURL(/\/settings$/);

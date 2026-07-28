@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { spawn } from 'node:child_process';
 
 interface FakeChild extends EventEmitter {
   stdin: PassThrough;
@@ -39,64 +38,10 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { spawnDecoder } from './decoder';
 
-describe('spawnDecoder YouTube media resolution', () => {
+describe('spawnDecoder local MP3 playback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fakes.children.length = 0;
-  });
-
-  it('resolves a media URL and asks FFmpeg to loop it without restarting yt-dlp', () => {
-    const callbacks = {
-      onData: vi.fn(),
-      onPlaying: vi.fn(),
-      onEnd: vi.fn()
-    };
-    const decoder = spawnDecoder(
-      { kind: 'youtube', url: 'https://youtu.be/example', loop: true },
-      callbacks
-    );
-    const [resolver] = fakes.children;
-    resolver.stdout.write('https://media.example/audio.webm\n');
-    resolver.exitCode = 0;
-    resolver.emit('close', 0);
-
-    const ffmpeg = fakes.children[1];
-    const ffmpegArgs = vi.mocked(spawn).mock.calls[1]?.[1];
-    expect(ffmpegArgs).toEqual(
-      expect.arrayContaining([
-        '-stream_loop',
-        '-1',
-        '-re',
-        '-i',
-        'https://media.example/audio.webm'
-      ])
-    );
-
-    decoder.stop();
-
-    expect(ffmpeg.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(resolver.kill).not.toHaveBeenCalled();
-    expect(callbacks.onEnd).not.toHaveBeenCalled();
-  });
-
-  it('stops yt-dlp cleanly while it is still resolving the media URL', () => {
-    const callbacks = {
-      onData: vi.fn(),
-      onPlaying: vi.fn(),
-      onEnd: vi.fn()
-    };
-    const decoder = spawnDecoder(
-      { kind: 'youtube', url: 'https://youtu.be/example', loop: true },
-      callbacks
-    );
-    const [resolver] = fakes.children;
-
-    decoder.stop();
-    resolver.emit('close', null);
-
-    expect(resolver.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(fakes.children).toHaveLength(1);
-    expect(callbacks.onEnd).not.toHaveBeenCalled();
   });
 
   it('pauses FFmpeg output on mixer backpressure and resumes on demand', () => {
@@ -105,7 +50,7 @@ describe('spawnDecoder YouTube media resolution', () => {
       onPlaying: vi.fn(),
       onEnd: vi.fn()
     };
-    const decoder = spawnDecoder({ kind: 'file', path: '/data/forest.mp3', loop: true }, callbacks);
+    const decoder = spawnDecoder({ path: '/data/forest.mp3', loop: true }, callbacks);
     const [ffmpeg] = fakes.children;
 
     ffmpeg.stdout.emit('data', Buffer.alloc(4_096));

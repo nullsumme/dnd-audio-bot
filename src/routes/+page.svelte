@@ -2,7 +2,6 @@
   import {
     AudioLines,
     CircleStop,
-    Cloud,
     FileAudio,
     Headphones,
     Library,
@@ -154,9 +153,7 @@
                 <Select.Group>
                   <Select.Label>Background library</Select.Label>
                   {#each soundkeep.backgroundAssets as asset (asset.id)}
-                    <Select.Item value={asset.id}>
-                      {asset.name} · {soundkeep.sourceTypeLabel(asset.sourceType)}
-                    </Select.Item>
+                    <Select.Item value={asset.id}>{asset.name}</Select.Item>
                   {/each}
                 </Select.Group>
               </Select.Content>
@@ -182,8 +179,7 @@
             <div
               class="bg-primary/10 text-primary grid size-11 shrink-0 place-items-center rounded-lg"
             >
-              {#if soundkeep.backgroundSource.origin === 'youtube'}<Cloud />{:else}<FileAudio
-                />{/if}
+              <FileAudio />
             </div>
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-semibold">{soundkeep.backgroundSource.label}</p>

@@ -47,9 +47,6 @@ spec:
             - { name: BODY_SIZE_LIMIT, value: 256M }
             - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
             - { name: XDG_CACHE_HOME, value: /data/.cache }
-            {{- if .Values.ytdlp.existingCookiesSecret }}
-            - { name: YTDLP_COOKIES_FILE, value: /var/run/soundkeep-ytdlp/cookies.txt }
-            {{- end }}
           ports:
             - name: http
               containerPort: 3000
@@ -57,9 +54,6 @@ spec:
           volumeMounts:
             - { name: data, mountPath: /data }
             - { name: tmp, mountPath: /tmp }
-            {{- if .Values.ytdlp.existingCookiesSecret }}
-            - { name: ytdlp-cookies, mountPath: /var/run/soundkeep-ytdlp, readOnly: true }
-            {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -77,14 +71,6 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 128Mi
-        {{- if .Values.ytdlp.existingCookiesSecret }}
-        - name: ytdlp-cookies
-          secret:
-            secretName: {{ .Values.ytdlp.existingCookiesSecret }}
-            items:
-              - key: {{ .Values.ytdlp.cookiesKey }}
-                path: cookies.txt
-        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

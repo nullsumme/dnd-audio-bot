@@ -4,7 +4,9 @@ import { config } from '../config';
 import { terminateProcess } from '../process';
 
 export const DISCORD_OPUS_BITRATE = 64_000;
-export const DISCORD_OPUS_BUFFER_MILLISECONDS = 200;
+// Discord dispatches one Opus packet every 20 ms. Keeping exactly one packet in
+// each Ogg page avoids adding a second application-level playback queue.
+export const DISCORD_OPUS_PAGE_MILLISECONDS = 20;
 
 export const DISCORD_OPUS_ARGS = [
   '-hide_banner',
@@ -28,7 +30,7 @@ export const DISCORD_OPUS_ARGS = [
   '-vbr',
   'constrained',
   '-application',
-  'audio',
+  'lowdelay',
   '-frame_duration',
   '20',
   '-packet_loss',
@@ -38,7 +40,9 @@ export const DISCORD_OPUS_ARGS = [
   '-f',
   'ogg',
   '-page_duration',
-  `${DISCORD_OPUS_BUFFER_MILLISECONDS * 1_000}`,
+  `${DISCORD_OPUS_PAGE_MILLISECONDS * 1_000}`,
+  '-flush_packets',
+  '1',
   'pipe:1'
 ] as const;
 

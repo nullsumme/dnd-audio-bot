@@ -9,7 +9,7 @@ export class ApplicationRuntime {
   readonly library = new AudioLibrary();
   readonly engine = new AudioEngine();
   readonly discord = new DiscordService(this.engine.mixer);
-  capabilities = { ffmpeg: false, ffprobe: false, ytdlp: false };
+  capabilities = { ffmpeg: false, ffprobe: false };
   #initialization: Promise<void> | null = null;
 
   initialize(): Promise<void> {
@@ -31,12 +31,7 @@ export class ApplicationRuntime {
   }
 
   isReady(): boolean {
-    return (
-      this.discord.status().ready &&
-      this.capabilities.ffmpeg &&
-      this.capabilities.ffprobe &&
-      this.capabilities.ytdlp
-    );
+    return this.discord.status().ready && this.capabilities.ffmpeg && this.capabilities.ffprobe;
   }
 
   async shutdown(): Promise<void> {
@@ -46,12 +41,11 @@ export class ApplicationRuntime {
 
   async #initialize(): Promise<void> {
     await this.library.initialize();
-    const [ffmpeg, ffprobe, ytdlp] = await Promise.all([
+    const [ffmpeg, ffprobe] = await Promise.all([
       commandAvailable(config.ffmpegPath, ['-version']),
-      commandAvailable(config.ffprobePath, ['-version']),
-      commandAvailable(config.ytdlpPath, ['--version'])
+      commandAvailable(config.ffprobePath, ['-version'])
     ]);
-    this.capabilities = { ffmpeg, ffprobe, ytdlp };
+    this.capabilities = { ffmpeg, ffprobe };
     await this.discord.start();
   }
 }

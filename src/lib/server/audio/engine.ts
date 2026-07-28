@@ -35,26 +35,15 @@ export class AudioEngine {
     return this.mixer.masterVolume;
   }
 
-  playAsset(asset: AudioAsset, path: string | null, role: AssetRole, volume = 0.7): ActiveSource {
+  playAsset(asset: AudioAsset, path: string, role: AssetRole, volume = 0.7): ActiveSource {
     const shouldLoop = role === 'ambience';
-    if (asset.sourceType === 'youtube-live' && !asset.youtubeUrl) {
-      throw new Error('This live YouTube asset is missing its URL.');
-    }
-    if (asset.sourceType !== 'youtube-live' && !path) {
-      throw new Error('This saved audio asset is missing its local file.');
-    }
     return this.#start({
       label: asset.name,
-      input:
-        asset.sourceType === 'youtube-live'
-          ? { kind: 'youtube', url: asset.youtubeUrl!, loop: shouldLoop }
-          : { kind: 'file', path: path!, loop: shouldLoop },
-      origin: asset.sourceType === 'youtube-live' ? 'youtube' : 'library',
+      input: { path, loop: shouldLoop },
       role,
       volume,
       shouldLoop,
-      assetId: asset.id,
-      url: asset.youtubeUrl ?? undefined
+      assetId: asset.id
     });
   }
 
@@ -101,12 +90,10 @@ export class AudioEngine {
   #start(input: {
     label: string;
     input: DecoderInput;
-    origin: 'youtube' | 'library';
     role: AssetRole;
     volume: number;
     shouldLoop: boolean;
     assetId?: string;
-    url?: string;
   }): ActiveSource {
     // Soundkeep deliberately exposes exactly two mix lines. Starting a source replaces
     // the current source on that line without disturbing playback on the other line.
@@ -116,13 +103,11 @@ export class AudioEngine {
       public: {
         id,
         label: input.label,
-        origin: input.origin,
         role: input.role,
         volume: clampVolume(input.volume),
         state: 'starting',
         startedAt: new Date().toISOString(),
-        ...(input.assetId ? { assetId: input.assetId } : {}),
-        ...(input.url ? { url: input.url } : {})
+        ...(input.assetId ? { assetId: input.assetId } : {})
       },
       input: input.input,
       shouldLoop: input.shouldLoop,
