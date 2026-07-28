@@ -82,6 +82,38 @@ describe('spawnDecoder local MP3 playback', () => {
     ]);
   });
 
+  it('applies an input seek offset before decoding without changing loop behavior', () => {
+    spawnDecoder(
+      { path: '/data/forest.mp3', loop: false, startMilliseconds: 12_345 },
+      {
+        onData: () => true,
+        onPlaying() {},
+        onEnd() {}
+      }
+    );
+
+    const args = fakes.args[0];
+    expect(args.slice(args.indexOf('-filter_complex_threads') + 2, args.indexOf('-i'))).toEqual([
+      '-ss',
+      '12.345'
+    ]);
+    expect(args).not.toContain('-stream_loop');
+  });
+
+  it('rejects invalid decoder seek offsets before starting FFmpeg', () => {
+    expect(() =>
+      spawnDecoder(
+        { path: '/data/forest.mp3', loop: false, startMilliseconds: -1 },
+        {
+          onData: () => true,
+          onPlaying() {},
+          onEnd() {}
+        }
+      )
+    ).toThrow('non-negative integer');
+    expect(fakes.children).toHaveLength(0);
+  });
+
   it('reads complete PCM frames on demand and resumes after mixer backpressure', async () => {
     const callbacks = {
       onData: vi.fn(() => false),

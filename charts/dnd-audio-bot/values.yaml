@@ -16,11 +16,15 @@ discord:
 audio:
   opusBitrateMode: auto
   maxUploadBytes: '262144000'
+  maxArtworkBytes: '5242880'
   maxLibraryBytes: '8589934592'
   minFreeBytes: '268435456'
   maxConcurrentUploads: 1
   maxPcmCacheBytes: '67108864'
   maxPcmCacheEntryBytes: '33554432'
+
+activity:
+  maxEntries: 100
 
 service:
   type: ClusterIP

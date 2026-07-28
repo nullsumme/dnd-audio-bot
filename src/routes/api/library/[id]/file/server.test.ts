@@ -16,6 +16,12 @@ const asset: AudioAsset = {
   mimeType: 'audio/mpeg',
   size: 999,
   duration: 1,
+  subtitle: '',
+  mood: '',
+  icon: 'sparkles',
+  artworkFilename: null,
+  artworkMimeType: null,
+  artworkSize: 0,
   createdAt: '2026-07-28T00:00:00.000Z',
   updatedAt: '2026-07-28T00:00:00.000Z'
 };

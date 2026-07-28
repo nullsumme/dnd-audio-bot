@@ -8,7 +8,12 @@ const schema = z.object({ scope: z.enum(['ambience', 'soundboard', 'all']) });
 export async function POST({ request }: { request: Request }) {
   try {
     const { scope } = schema.parse(await request.json());
-    return json({ stopped: runtime.engine.stopScope(scope) });
+    const stopped = runtime.engine.stopScope(scope);
+    if (scope === 'ambience' || scope === 'all') await runtime.playback.reconcile();
+    if (stopped > 0) {
+      runtime.activity.record('audio', 'stop', `Stopped ${scope === 'all' ? 'all audio' : scope}`);
+    }
+    return json({ stopped });
   } catch (error) {
     return apiError(error);
   }

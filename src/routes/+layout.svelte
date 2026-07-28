@@ -5,10 +5,13 @@
   import {
     AudioLines,
     Bot,
+    Hash,
     Library,
     Radio,
     RefreshCw,
     Settings,
+    Users,
+    Volume2,
     WandSparkles
   } from '@lucide/svelte';
   import * as Alert from '$lib/components/ui/alert';
@@ -18,8 +21,10 @@
   import { Separator } from '$lib/components/ui/separator';
   import * as Sidebar from '$lib/components/ui/sidebar';
   import { Skeleton } from '$lib/components/ui/skeleton';
+  import { Slider } from '$lib/components/ui/slider';
   import { Toaster } from '$lib/components/ui/sonner';
   import { provideSoundkeep } from '$lib/soundkeep-client.svelte';
+  import { cn } from '$lib/utils';
 
   let { children } = $props();
 
@@ -47,8 +52,25 @@
 
   let pathname = $derived(page.url.pathname);
   let currentPage = $derived(navigation.find((item) => item.href === pathname) ?? navigation[0]);
+  let masterPercent = $state(Math.round(soundkeep.state.masterVolume * 100));
 
   onMount(() => soundkeep.start());
+
+  $effect(() => {
+    masterPercent = Math.round(soundkeep.state.masterVolume * 100);
+  });
+
+  async function changeMasterVolume(event: Event) {
+    masterPercent = Number((event.currentTarget as HTMLInputElement).value);
+    await soundkeep.changeMasterVolume(masterPercent / 100);
+  }
+
+  function bitrateLabel() {
+    const diagnostics = soundkeep.state.discord.audioDiagnostics;
+    if (diagnostics.bitrate !== null) return `${Math.round(diagnostics.bitrate / 1_000)} kbps`;
+    if (diagnostics.bitrateMode === 'auto') return 'Auto bitrate';
+    return `${Math.round(Number(diagnostics.bitrateMode) / 1_000)} kbps target`;
+  }
 </script>
 
 <svelte:head>
@@ -152,26 +174,65 @@
     <Sidebar.Rail />
   </Sidebar.Root>
 
-  <Sidebar.Inset>
+  <Sidebar.Inset class="min-h-0 overflow-hidden">
     <header
-      class="bg-background/90 sticky top-0 flex h-14 shrink-0 items-center gap-3 border-b px-4 backdrop-blur md:px-6"
+      class="bg-background/90 flex h-16 shrink-0 items-center gap-3 border-b px-4 backdrop-blur md:px-6"
     >
       <Sidebar.Trigger class="-ml-1" />
       <Separator orientation="vertical" class="h-4" />
-      <Breadcrumb.Root class="min-w-0 flex-1">
-        <Breadcrumb.List>
-          <Breadcrumb.Item class="hidden sm:inline-flex">
-            <Breadcrumb.Link href="/">Soundkeep</Breadcrumb.Link>
-          </Breadcrumb.Item>
-          <Breadcrumb.Separator class="hidden sm:block" />
-          <Breadcrumb.Item>
-            <Breadcrumb.Page>{currentPage.title}</Breadcrumb.Page>
-          </Breadcrumb.Item>
-        </Breadcrumb.List>
-      </Breadcrumb.Root>
-      <Badge variant={soundkeep.state.discord.connected ? 'success' : 'outline'}>
-        {soundkeep.state.discord.connected ? 'Voice connected' : 'Voice offline'}
+      <div class="min-w-0 flex-1">
+        <Breadcrumb.Root>
+          <Breadcrumb.List>
+            <Breadcrumb.Item class="hidden sm:inline-flex">
+              <Breadcrumb.Link href="/">Soundkeep</Breadcrumb.Link>
+            </Breadcrumb.Item>
+            <Breadcrumb.Separator class="hidden sm:block" />
+            <Breadcrumb.Item>
+              <Breadcrumb.Page>{currentPage.title}</Breadcrumb.Page>
+            </Breadcrumb.Item>
+          </Breadcrumb.List>
+        </Breadcrumb.Root>
+        <p class="text-muted-foreground mt-0.5 hidden truncate text-xs md:block">
+          {currentPage.description}
+        </p>
+      </div>
+      {#if soundkeep.state.discord.connected}
+        <Badge variant="outline" class="hidden max-w-48 lg:inline-flex">
+          <Hash />
+          <span class="truncate">{soundkeep.state.discord.channelName}</span>
+        </Badge>
+        <Badge
+          variant="outline"
+          class="hidden lg:inline-flex"
+          aria-label={`${soundkeep.state.discord.listenerCount} human listeners`}
+        >
+          <Users />
+          {soundkeep.state.discord.listenerCount}
+        </Badge>
+      {/if}
+      <Badge
+        variant={soundkeep.state.discord.connected ? 'success' : 'outline'}
+        aria-label={soundkeep.state.discord.connected ? 'Voice connected' : 'Voice offline'}
+      >
+        <Radio />
+        <span class="hidden sm:inline">
+          {soundkeep.state.discord.connected ? 'Voice connected' : 'Voice offline'}
+        </span>
       </Badge>
+      <Badge variant="outline" class="hidden xl:inline-flex">{bitrateLabel()}</Badge>
+      <div
+        class="bg-muted/50 hidden w-52 items-center gap-2 rounded-full border px-3 py-1.5 2xl:flex"
+      >
+        <Volume2 class="text-primary size-4" />
+        <Slider
+          bind:value={masterPercent}
+          aria-label="Master volume"
+          onchange={changeMasterVolume}
+        />
+        <span class="text-muted-foreground w-8 text-right text-xs tabular-nums">
+          {masterPercent}
+        </span>
+      </div>
       <Button
         variant="ghost"
         size="icon-sm"
@@ -183,7 +244,12 @@
       </Button>
     </header>
 
-    <div class="flex flex-1 flex-col">
+    <div
+      class={cn(
+        'flex min-h-0 flex-1 flex-col',
+        pathname === '/' ? 'overflow-hidden' : 'overflow-y-auto'
+      )}
+    >
       {#if soundkeep.initialLoading}
         <div class="grid gap-4 p-4 md:grid-cols-2 md:p-6 xl:grid-cols-4">
           {#each Array(4) as _, index (index)}

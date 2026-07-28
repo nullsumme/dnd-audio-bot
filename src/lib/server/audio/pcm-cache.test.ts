@@ -19,6 +19,12 @@ function asset(id: string, duration = 0.1, role: 'ambience' | 'soundboard' = 'so
     mimeType: 'audio/mpeg',
     size: 1_000,
     duration,
+    subtitle: '',
+    mood: '',
+    icon: role === 'soundboard' ? 'sparkles' : 'music',
+    artworkFilename: null,
+    artworkMimeType: null,
+    artworkSize: 0,
     createdAt: timestamp,
     updatedAt: timestamp
   } satisfies AudioAsset;

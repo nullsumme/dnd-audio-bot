@@ -13,7 +13,13 @@ export function _parseDiscordBitrateMode(value: unknown) {
 export async function PATCH({ request }: { request: Request }) {
   try {
     const mode = _parseDiscordBitrateMode(await request.json());
-    return json({ discord: await runtime.setDiscordBitrateMode(mode) });
+    const discord = await runtime.setDiscordBitrateMode(mode);
+    runtime.activity.record(
+      'settings',
+      'update',
+      `Discord bitrate set to ${mode === 'auto' ? 'automatic' : `${mode} kbps`}`
+    );
+    return json({ discord });
   } catch (error) {
     return apiError(error);
   }

@@ -60,15 +60,28 @@ describe('AudioLibrary', { timeout: 30_000 }, () => {
     expect(asset).toMatchObject({
       name: 'Storm',
       size: mp3.byteLength,
-      duration: 2.0875
+      duration: 2.0875,
+      subtitle: '',
+      mood: '',
+      icon: 'music',
+      artworkFilename: null
     });
     expect(await readFile(library.filePath(asset))).toEqual(Buffer.from(mp3));
 
     const updated = await library.update(asset.id, {
       name: 'Distant storm',
-      role: 'soundboard'
+      role: 'soundboard',
+      subtitle: 'Rolling across the valley',
+      mood: 'Ominous',
+      icon: 'cloud-lightning'
     });
-    expect(updated).toMatchObject({ name: 'Distant storm', role: 'soundboard' });
+    expect(updated).toMatchObject({
+      name: 'Distant storm',
+      role: 'soundboard',
+      subtitle: 'Rolling across the valley',
+      mood: 'Ominous',
+      icon: 'cloud-lightning'
+    });
 
     const reloaded = new AudioLibrary(directory, {
       minFreeBytes: 0,
@@ -83,6 +96,80 @@ describe('AudioLibrary', { timeout: 30_000 }, () => {
     await deletion;
     expect(reloaded.list()).toEqual([]);
     await expect(readFile(reloaded.filePath(asset))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('persists, replaces and removes bounded PNG or JPEG artwork', async () => {
+    const { directory, library } = await createLibrary();
+    const asset = await library.add(addInput());
+    const png = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x49, 0x45, 0x4e, 0x44
+    ]);
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9]);
+
+    const withPng = await library.setArtwork(asset.id, png, 'image/png');
+    expect(withPng).toMatchObject({
+      artworkMimeType: 'image/png',
+      artworkSize: png.byteLength
+    });
+    expect(await readFile(library.artworkPath(withPng)!)).toEqual(Buffer.from(png));
+
+    const withJpeg = await library.setArtwork(asset.id, jpeg, 'image/jpeg');
+    expect(withJpeg.artworkFilename).not.toBe(withPng.artworkFilename);
+    await expect(readFile(library.artworkPath(withPng)!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(library.artworkPath(withJpeg)!)).toEqual(Buffer.from(jpeg));
+
+    const reloaded = new AudioLibrary(directory, {
+      minFreeBytes: 0,
+      ffmpegPath: validatorPath,
+      ffprobePath: validatorPath
+    });
+    await reloaded.initialize();
+    expect(reloaded.get(asset.id)).toMatchObject({
+      artworkMimeType: 'image/jpeg',
+      artworkSize: jpeg.byteLength
+    });
+
+    const withoutArtwork = await reloaded.removeArtwork(asset.id);
+    expect(withoutArtwork).toMatchObject({
+      artworkFilename: null,
+      artworkMimeType: null,
+      artworkSize: 0
+    });
+    await expect(readFile(library.artworkPath(withJpeg)!)).rejects.toMatchObject({
+      code: 'ENOENT'
+    });
+  });
+
+  it('rejects invalid or oversized artwork without changing metadata', async () => {
+    const { library } = await createLibrary({ maxArtworkBytes: 8 });
+    const asset = await library.add(addInput());
+
+    await expect(
+      library.setArtwork(asset.id, Uint8Array.from([1, 2, 3]), 'image/png')
+    ).rejects.toThrow('valid PNG or JPEG');
+    await expect(
+      library.setArtwork(
+        asset.id,
+        Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]),
+        'image/png'
+      )
+    ).rejects.toThrow('8 bytes or smaller');
+    expect(library.get(asset.id)?.artworkFilename).toBeNull();
+  });
+
+  it('counts artwork against the total managed library quota', async () => {
+    const png = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x49, 0x45, 0x4e, 0x44
+    ]);
+    const { library } = await createLibrary({
+      maxLibraryBytes: mp3.byteLength + png.byteLength - 1
+    });
+    const asset = await library.add(addInput());
+
+    await expect(library.setArtwork(asset.id, png, 'image/png')).rejects.toBeInstanceOf(
+      LibraryQuotaError
+    );
+    expect(library.get(asset.id)?.artworkFilename).toBeNull();
   });
 
   it('rejects a fake ID3 payload when ffprobe or full decode cannot validate it', async () => {
@@ -306,7 +393,7 @@ describe('AudioLibrary', { timeout: 30_000 }, () => {
       const persisted = JSON.parse(
         await readFile(library.indexPath, 'utf8')
       ) as LibraryIndexForTest;
-      expect(persisted.version).toBe(3);
+      expect(persisted.version).toBe(4);
     }
   });
 });

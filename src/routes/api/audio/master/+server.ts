@@ -8,7 +8,13 @@ const schema = z.object({ volume: z.number().min(0).max(1) });
 export async function PATCH({ request }: { request: Request }) {
   try {
     const { volume } = schema.parse(await request.json());
-    return json({ masterVolume: runtime.engine.setMasterVolume(volume) });
+    const masterVolume = runtime.engine.setMasterVolume(volume);
+    runtime.activity.record(
+      'settings',
+      'update',
+      `Master volume set to ${Math.round(masterVolume * 100)}%`
+    );
+    return json({ masterVolume });
   } catch (error) {
     return apiError(error);
   }

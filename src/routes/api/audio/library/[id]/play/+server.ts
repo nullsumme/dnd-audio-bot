@@ -12,7 +12,10 @@ export function _resolvePlaybackRole(
   assetRole: 'ambience' | 'soundboard',
   requested?: 'ambience' | 'soundboard'
 ) {
-  return requested ?? assetRole;
+  if (requested !== undefined && requested !== assetRole) {
+    throw new Error('Playback placement must match the asset library placement.');
+  }
+  return assetRole;
 }
 
 export async function POST({ params, request }: { params: { id: string }; request: Request }) {
@@ -23,12 +26,23 @@ export async function POST({ params, request }: { params: { id: string }; reques
     const asset = runtime.library.get(params.id);
     if (!asset) throw new Error('Audio asset not found.');
     const role = _resolvePlaybackRole(asset.role, input.role);
-    const path = runtime.library.filePath(asset);
-    const pcm =
-      role === 'soundboard' && asset.role === 'soundboard'
-        ? await runtime.pcmCache.getOrPrepare(asset, path)
-        : null;
-    const source = runtime.engine.playAsset(asset, path, role, input.volume, pcm);
+    const source =
+      role === 'ambience'
+        ? await runtime.playback.play(asset, input.volume ?? 0.65)
+        : runtime.engine.playAsset(
+            asset,
+            runtime.library.filePath(asset),
+            role,
+            input.volume,
+            asset.role === 'soundboard'
+              ? await runtime.pcmCache.getOrPrepare(asset, runtime.library.filePath(asset))
+              : null
+          );
+    runtime.activity.record(
+      'audio',
+      'play',
+      `${role === 'ambience' ? 'Started' : 'Played'} ${asset.name}`
+    );
     return json({ source }, { status: 201 });
   } catch (error) {
     return apiError(error);

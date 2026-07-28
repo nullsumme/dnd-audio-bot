@@ -47,11 +47,13 @@ spec:
             - { name: BODY_SIZE_LIMIT, value: 256M }
             - { name: DISCORD_OPUS_BITRATE_MODE, value: {{ .Values.audio.opusBitrateMode | quote }} }
             - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
+            - { name: MAX_ARTWORK_BYTES, value: {{ .Values.audio.maxArtworkBytes | quote }} }
             - { name: MAX_LIBRARY_BYTES, value: {{ .Values.audio.maxLibraryBytes | quote }} }
             - { name: MIN_FREE_BYTES, value: {{ .Values.audio.minFreeBytes | quote }} }
             - { name: MAX_CONCURRENT_UPLOADS, value: {{ .Values.audio.maxConcurrentUploads | quote }} }
             - { name: MAX_PCM_CACHE_BYTES, value: {{ .Values.audio.maxPcmCacheBytes | quote }} }
             - { name: MAX_PCM_CACHE_ENTRY_BYTES, value: {{ .Values.audio.maxPcmCacheEntryBytes | quote }} }
+            - { name: ACTIVITY_LOG_CAPACITY, value: {{ .Values.activity.maxEntries | quote }} }
             - { name: XDG_CACHE_HOME, value: /data/.cache }
           ports:
             - name: http

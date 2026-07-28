@@ -27,9 +27,11 @@ export const config = {
   ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
   ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
   maxUploadBytes: positiveInteger('MAX_UPLOAD_BYTES', 250 * 1024 * 1024),
+  maxArtworkBytes: positiveInteger('MAX_ARTWORK_BYTES', 5 * 1024 * 1024),
   maxLibraryBytes: positiveInteger('MAX_LIBRARY_BYTES', 8 * 1024 * 1024 * 1024),
   minFreeBytes: positiveInteger('MIN_FREE_BYTES', 256 * 1024 * 1024),
   maxConcurrentUploads: positiveInteger('MAX_CONCURRENT_UPLOADS', 1),
   maxPcmCacheBytes: nonNegativeInteger('MAX_PCM_CACHE_BYTES', 64 * 1024 * 1024),
-  maxPcmCacheEntryBytes: nonNegativeInteger('MAX_PCM_CACHE_ENTRY_BYTES', 32 * 1024 * 1024)
+  maxPcmCacheEntryBytes: nonNegativeInteger('MAX_PCM_CACHE_ENTRY_BYTES', 32 * 1024 * 1024),
+  activityLogCapacity: positiveInteger('ACTIVITY_LOG_CAPACITY', 100)
 } as const;

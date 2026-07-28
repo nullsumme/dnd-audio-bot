@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 export const SAMPLE_RATE = 48_000;
 export const CHANNELS = 2;
 export const FRAME_MILLISECONDS = 20;
+export const PCM_BYTES_PER_MILLISECOND = (SAMPLE_RATE * CHANNELS * 2) / 1_000;
 export const SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_MILLISECONDS * CHANNELS) / 1_000;
 export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
 export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 3;
@@ -29,10 +30,14 @@ const realtimeScheduler: MixerScheduler = {
 interface MixerInput {
   buffer: Buffer;
   volume: number;
+  paused: boolean;
   backpressured: boolean;
   ended: boolean;
   partialDeferred: boolean;
+  consumedBytes: number;
+  consumedFrames: number;
   onDrain: () => void;
+  onConsumed: (bytes: number, totalBytes: number) => void;
   onFinished: (() => void) | null;
 }
 
@@ -100,14 +105,23 @@ export class PcmMixer extends Readable {
     this.#masterVolume = Math.max(0, Math.min(1, volume));
   }
 
-  addInput(id: string, volume: number, onDrain: () => void = () => {}): void {
+  addInput(
+    id: string,
+    volume: number,
+    onDrain: () => void = () => {},
+    onConsumed: (bytes: number, totalBytes: number) => void = () => {}
+  ): void {
     this.#inputs.set(id, {
       buffer: Buffer.alloc(0),
       volume: Math.max(0, Math.min(1, volume)),
+      paused: false,
       backpressured: false,
       ended: false,
       partialDeferred: false,
+      consumedBytes: 0,
+      consumedFrames: 0,
       onDrain,
+      onConsumed,
       onFinished: null
     });
   }
@@ -119,6 +133,13 @@ export class PcmMixer extends Readable {
   setInputVolume(id: string, volume: number): void {
     const input = this.#inputs.get(id);
     if (input) input.volume = Math.max(0, Math.min(1, volume));
+  }
+
+  setInputPaused(id: string, paused: boolean): boolean {
+    const input = this.#inputs.get(id);
+    if (!input) return false;
+    input.paused = paused;
+    return true;
   }
 
   append(id: string, chunk: Buffer): boolean {
@@ -144,6 +165,14 @@ export class PcmMixer extends Readable {
 
   bufferedBytes(id: string): number {
     return this.#inputs.get(id)?.buffer.length ?? 0;
+  }
+
+  consumedBytes(id: string): number {
+    return this.#inputs.get(id)?.consumedBytes ?? 0;
+  }
+
+  consumedFrames(id: string): number {
+    return this.#inputs.get(id)?.consumedFrames ?? 0;
   }
 
   override _read(): void {
@@ -210,12 +239,17 @@ export class PcmMixer extends Readable {
     const frames: Array<{ frame: Buffer; volume: number }> = [];
     const finished: Array<() => void> = [];
     for (const input of this.#inputs.values()) {
+      if (input.paused) continue;
+
+      let consumedBytes = 0;
       if (input.buffer.length >= BYTES_PER_FRAME) {
         const frame = input.buffer.subarray(0, BYTES_PER_FRAME);
         input.buffer = input.buffer.subarray(BYTES_PER_FRAME);
         input.partialDeferred = false;
         frames.push({ frame, volume: input.volume });
+        consumedBytes = BYTES_PER_FRAME;
       } else if (input.ended && input.buffer.length > 0) {
+        consumedBytes = input.buffer.length;
         const frame = Buffer.alloc(BYTES_PER_FRAME);
         input.buffer.copy(frame);
         input.buffer = Buffer.alloc(0);
@@ -227,6 +261,11 @@ export class PcmMixer extends Readable {
         this.#diagnostics.partialFramesDeferred += 1;
       }
 
+      if (consumedBytes > 0) {
+        input.consumedBytes += consumedBytes;
+        input.consumedFrames += 1;
+        input.onConsumed(consumedBytes, input.consumedBytes);
+      }
       this.#releaseBackpressure(input);
       if (input.ended && input.buffer.length === 0 && input.onFinished) {
         const callback = input.onFinished;

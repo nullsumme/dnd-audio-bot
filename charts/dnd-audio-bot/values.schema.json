@@ -20,6 +20,7 @@
       "required": [
         "opusBitrateMode",
         "maxUploadBytes",
+        "maxArtworkBytes",
         "maxLibraryBytes",
         "minFreeBytes",
         "maxConcurrentUploads",
@@ -32,11 +33,19 @@
           "enum": ["auto", "64000", "96000", "128000"]
         },
         "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" },
+        "maxArtworkBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "maxLibraryBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "minFreeBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "maxConcurrentUploads": { "type": "integer", "minimum": 1, "maximum": 8 },
         "maxPcmCacheBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "maxPcmCacheEntryBytes": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": ["maxEntries"],
+      "properties": {
+        "maxEntries": { "type": "integer", "minimum": 1, "maximum": 1000 }
       }
     },
     "persistence": {
@@ -54,5 +63,5 @@
       }
     }
   },
-  "required": ["replicaCount", "discord", "audio", "persistence"]
+  "required": ["replicaCount", "discord", "audio", "activity", "persistence"]
 }

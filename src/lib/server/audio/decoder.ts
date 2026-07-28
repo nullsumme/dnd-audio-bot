@@ -6,6 +6,7 @@ import { BYTES_PER_FRAME } from './mixer';
 export interface DecoderInput {
   path: string;
   loop: boolean;
+  startMilliseconds?: number;
 }
 
 export interface DecoderCallbacks {
@@ -17,6 +18,16 @@ export interface DecoderCallbacks {
 export interface DecoderHandle {
   resume(): void;
   stop(): Promise<void>;
+}
+
+function seekSeconds(milliseconds: number | undefined): string | null {
+  if (milliseconds === undefined || milliseconds === 0) return null;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+    throw new RangeError(
+      'Decoder start offset must be a non-negative integer number of milliseconds.'
+    );
+  }
+  return (milliseconds / 1_000).toFixed(3);
 }
 
 function boundedLog(current: string, chunk: Buffer): string {
@@ -38,6 +49,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
     resolveClosed = resolve;
   });
 
+  const start = seekSeconds(input.startMilliseconds);
   const process: ChildProcessWithoutNullStreams = spawn(
     config.ffmpegPath,
     [
@@ -55,6 +67,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
       '-filter_complex_threads',
       '1',
       ...(input.loop ? ['-stream_loop', '-1'] : []),
+      ...(start ? ['-ss', start] : []),
       '-i',
       input.path,
       '-map',

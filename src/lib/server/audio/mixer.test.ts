@@ -274,6 +274,54 @@ describe('PcmMixer timing', () => {
     mixer.destroy();
   });
 
+  it('pauses one input without pausing the mix and accounts only consumed PCM bytes', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    const consumed: Array<[number, number]> = [];
+    mixer.setMasterVolume(1);
+    mixer.addInput('ambience', 1, undefined, (bytes, total) => {
+      consumed.push([bytes, total]);
+    });
+    mixer.addInput('soundboard', 1);
+    mixer.append('ambience', Buffer.concat([constantFrame(1_000), constantFrame(2_000)]));
+    mixer.append('soundboard', Buffer.concat([constantFrame(10_000), constantFrame(20_000)]));
+    const output = capturePushedFrames(mixer);
+    mixer.setInputPaused('ambience', true);
+    mixer._read();
+
+    clock.fireAt(FRAME_MILLISECONDS);
+    expect(output.at(-1)?.readInt16LE(0)).toBe(Math.round(10_000 * MIX_LINE_GAIN));
+    expect(mixer.bufferedBytes('ambience')).toBe(BYTES_PER_FRAME * 2);
+    expect(mixer.consumedBytes('ambience')).toBe(0);
+    expect(mixer.consumedFrames('ambience')).toBe(0);
+    expect(consumed).toEqual([]);
+
+    mixer.setInputPaused('ambience', false);
+    clock.fireAt(FRAME_MILLISECONDS * 2);
+    expect(output.at(-1)?.readInt16LE(0)).toBe(Math.round(21_000 * MIX_LINE_GAIN));
+    expect(mixer.consumedBytes('ambience')).toBe(BYTES_PER_FRAME);
+    expect(mixer.consumedFrames('ambience')).toBe(1);
+    expect(consumed).toEqual([[BYTES_PER_FRAME, BYTES_PER_FRAME]]);
+    mixer.destroy();
+  });
+
+  it('accounts the unpadded payload length of a final partial frame', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    const consumed = vi.fn();
+    mixer.addInput('effect', 1, undefined, consumed);
+    mixer.append('effect', Buffer.alloc(1_234));
+    mixer.endInput('effect');
+    mixer._read();
+
+    clock.fireAt(FRAME_MILLISECONDS);
+
+    expect(mixer.consumedBytes('effect')).toBe(1_234);
+    expect(mixer.consumedFrames('effect')).toBe(1);
+    expect(consumed).toHaveBeenCalledWith(1_234, 1_234);
+    mixer.destroy();
+  });
+
   it('caps a long-stall catch-up at three frames and rebases the deadline', () => {
     const clock = createScheduler();
     const mixer = new PcmMixer(clock.scheduler, 0);

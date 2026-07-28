@@ -9,7 +9,13 @@ export async function POST({ request }: { request: Request }) {
   try {
     await runtime.initialize();
     const { channelId } = schema.parse(await request.json());
-    return json({ discord: await runtime.discord.connect(channelId) });
+    const discord = await runtime.discord.connect(channelId);
+    runtime.activity.record(
+      'discord',
+      'connect',
+      `Connected to ${discord.guildName ?? 'Discord'} · ${discord.channelName ?? channelId}`
+    );
+    return json({ discord });
   } catch (error) {
     return apiError(error);
   }

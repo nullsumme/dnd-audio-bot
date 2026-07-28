@@ -41,6 +41,15 @@ interface FakePipeline {
   stop: ReturnType<typeof vi.fn<() => Promise<void>>>;
 }
 
+interface FakeVoiceGuildCaches {
+  voiceStates: {
+    cache: Map<string, { id: string; channelId: string | null }>;
+  };
+  members: {
+    cache: Map<string, { id: string; user: { bot: boolean } }>;
+  };
+}
+
 function channel(id: string, name: string, bitrate = 96_000): VoiceBasedChannel {
   return {
     id,
@@ -51,9 +60,22 @@ function channel(id: string, name: string, bitrate = 96_000): VoiceBasedChannel 
     guild: {
       id: `guild-${id}`,
       name: `Guild ${name}`,
-      voiceAdapterCreator: {}
+      voiceAdapterCreator: {},
+      voiceStates: { cache: new Map() },
+      members: { cache: new Map() }
     }
   } as unknown as VoiceBasedChannel;
+}
+
+function cacheVoiceMember(
+  voiceChannel: VoiceBasedChannel,
+  memberId: string,
+  bot: boolean,
+  channelId: string | null = voiceChannel.id
+): void {
+  const guild = voiceChannel.guild as unknown as FakeVoiceGuildCaches;
+  guild.voiceStates.cache.set(memberId, { id: memberId, channelId });
+  guild.members.cache.set(memberId, { id: memberId, user: { bot } });
 }
 
 function voiceConnection(voiceChannel: VoiceBasedChannel): VoiceConnection {
@@ -177,6 +199,44 @@ describe('DiscordService audio lifecycle', () => {
       bitrate: 96_000,
       channelBitrate: 96_000
     });
+  });
+
+  it('counts cached human listeners in the connected channel independently of audio playback', async () => {
+    createService();
+    const voiceChannel = channel('123456789', 'Table');
+    const guild = voiceChannel.guild as unknown as FakeVoiceGuildCaches;
+    cacheVoiceMember(voiceChannel, 'human-one', false);
+    cacheVoiceMember(voiceChannel, 'human-two', false);
+    cacheVoiceMember(voiceChannel, 'other-channel', false, '987654321');
+    cacheVoiceMember(voiceChannel, 'another-bot', true);
+    cacheVoiceMember(voiceChannel, 'soundkeep', false);
+    guild.voiceStates.cache.set('uncached-member', {
+      id: 'uncached-member',
+      channelId: voiceChannel.id
+    });
+    service!.client.user = {
+      id: 'soundkeep',
+      username: 'Soundkeep',
+      displayAvatarURL: vi.fn(() => null)
+    } as never;
+    arrangeReadyConnection(voiceChannel);
+
+    await service!.connect(voiceChannel.id);
+
+    expect(service!.status()).toMatchObject({
+      listenerCount: 2,
+      playableConnections: 0
+    });
+
+    guild.voiceStates.cache.get('human-two')!.channelId = '987654321';
+    cacheVoiceMember(voiceChannel, 'human-three', false);
+    expect(service!.status()).toMatchObject({
+      listenerCount: 2,
+      playableConnections: 0
+    });
+
+    service!.disconnect();
+    expect(service!.status().listenerCount).toBe(0);
   });
 
   it('warms and swaps a capped bitrate without reconnecting or resubscribing', async () => {

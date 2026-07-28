@@ -1,7 +1,8 @@
 import type { DiscordBitrateMode } from '$lib/audio-quality';
+import type { AssetIcon, ArtworkMimeType } from '$lib/asset-metadata';
 
 export type AssetRole = 'ambience' | 'soundboard';
-export type SourceState = 'starting' | 'playing' | 'restarting' | 'failed';
+export type SourceState = 'starting' | 'playing' | 'paused' | 'restarting' | 'failed';
 
 export interface AudioAsset {
   id: string;
@@ -13,8 +14,56 @@ export interface AudioAsset {
   mimeType: 'audio/mpeg';
   size: number;
   duration: number | null;
+  subtitle: string;
+  mood: string;
+  icon: AssetIcon;
+  artworkFilename: string | null;
+  artworkMimeType: ArtworkMimeType | null;
+  artworkSize: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SceneCollection {
+  id: string;
+  name: string;
+  description: string;
+  trackIds: string[];
+  effectIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ActivityCategory = 'discord' | 'audio' | 'library' | 'scene' | 'settings' | 'system';
+export type ActivityAction =
+  | 'connect'
+  | 'disconnect'
+  | 'play'
+  | 'pause'
+  | 'resume'
+  | 'seek'
+  | 'stop'
+  | 'upload'
+  | 'update'
+  | 'delete'
+  | 'error';
+
+export interface ActivityEntry {
+  readonly id: string;
+  readonly category: ActivityCategory;
+  readonly action: ActivityAction;
+  readonly message: string;
+  readonly createdAt: string;
+}
+
+export type RepeatMode = 'off' | 'all' | 'one';
+
+export interface PlaybackState {
+  activeSceneId: string | null;
+  queue: string[];
+  currentAssetId: string | null;
+  shuffle: boolean;
+  repeatMode: RepeatMode;
 }
 
 export interface ActiveSource {
@@ -24,6 +73,9 @@ export interface ActiveSource {
   volume: number;
   state: SourceState;
   startedAt: string;
+  duration: number | null;
+  positionMilliseconds: number;
+  repeat: boolean;
   assetId?: string;
   error?: string;
 }
@@ -69,6 +121,7 @@ export interface DiscordStatus {
   channelId: string | null;
   channelName: string | null;
   playerState: 'idle' | 'buffering' | 'playing' | 'paused' | 'autopaused';
+  listenerCount: number;
   playableConnections: number;
   subscribed: boolean;
   audioDiagnostics: {
@@ -94,6 +147,9 @@ export interface ApplicationState {
   guilds: GuildSummary[];
   sources: ActiveSource[];
   assets: AudioAsset[];
+  scenes: SceneCollection[];
+  activity: ActivityEntry[];
+  playback: PlaybackState;
   masterVolume: number;
   pcmCache: PcmCacheStatus;
   capabilities: {

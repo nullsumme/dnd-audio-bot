@@ -1,7 +1,14 @@
 import { getContext, setContext } from 'svelte';
 import { toast } from 'svelte-sonner';
+import type { AssetIcon } from '$lib/asset-metadata';
 import type { DiscordBitrateMode } from '$lib/audio-quality';
-import type { ApplicationState, AssetRole, AudioAsset } from '$lib/types';
+import type {
+  ApplicationState,
+  AssetRole,
+  AudioAsset,
+  RepeatMode,
+  SceneCollection
+} from '$lib/types';
 
 const emptyState: ApplicationState = {
   discord: {
@@ -15,6 +22,7 @@ const emptyState: ApplicationState = {
     channelId: null,
     channelName: null,
     playerState: 'idle',
+    listenerCount: 0,
     playableConnections: 0,
     subscribed: false,
     audioDiagnostics: {
@@ -37,6 +45,15 @@ const emptyState: ApplicationState = {
   guilds: [],
   sources: [],
   assets: [],
+  scenes: [],
+  activity: [],
+  playback: {
+    activeSceneId: null,
+    queue: [],
+    currentAssetId: null,
+    shuffle: false,
+    repeatMode: 'off'
+  },
   masterVolume: 0.8,
   pcmCache: {
     enabled: false,
@@ -78,6 +95,32 @@ export class SoundkeepClient {
 
   get soundboardAssets() {
     return this.state.assets.filter((asset) => asset.role === 'soundboard');
+  }
+
+  get activeScene() {
+    return (
+      this.state.scenes.find((scene) => scene.id === this.state.playback.activeSceneId) ?? null
+    );
+  }
+
+  get visibleBackgroundAssets() {
+    const ids = this.activeScene?.trackIds;
+    if (!ids) return this.backgroundAssets;
+    const assets = new Map(this.backgroundAssets.map((asset) => [asset.id, asset]));
+    return ids.flatMap((id) => {
+      const asset = assets.get(id);
+      return asset ? [asset] : [];
+    });
+  }
+
+  get visibleSoundboardAssets() {
+    const ids = this.activeScene?.effectIds;
+    if (!ids) return this.soundboardAssets;
+    const assets = new Map(this.soundboardAssets.map((asset) => [asset.id, asset]));
+    return ids.flatMap((id) => {
+      const asset = assets.get(id);
+      return asset ? [asset] : [];
+    });
   }
 
   get totalLocalBytes() {
@@ -207,6 +250,22 @@ export class SoundkeepClient {
     }).catch((error) => this.showError(error));
   }
 
+  async changeSourceTransport(
+    id: string,
+    input: {
+      paused?: boolean;
+      positionMilliseconds?: number;
+      repeat?: boolean;
+    }
+  ) {
+    return this.run(`transport-${id}`, () =>
+      this.request(`/api/audio/sources/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input)
+      })
+    );
+  }
+
   async changeMasterVolume(volume: number) {
     await this.request('/api/audio/master', {
       method: 'PATCH',
@@ -216,8 +275,16 @@ export class SoundkeepClient {
 
   async uploadAsset(
     file: File,
-    input: { name: string; category: string; role: AssetRole },
-    displayName: string
+    input: {
+      name: string;
+      category: string;
+      role: AssetRole;
+      subtitle?: string;
+      mood?: string;
+      icon?: AssetIcon;
+    },
+    displayName: string,
+    showSuccess = true
   ) {
     const query = new URLSearchParams({
       filename: file.name,
@@ -225,6 +292,9 @@ export class SoundkeepClient {
       category: input.category,
       role: input.role
     });
+    if (input.subtitle) query.set('subtitle', input.subtitle);
+    if (input.mood) query.set('mood', input.mood);
+    if (input.icon) query.set('icon', input.icon);
     return this.run(
       'upload',
       () =>
@@ -233,13 +303,13 @@ export class SoundkeepClient {
           headers: { 'content-type': 'audio/mpeg' },
           body: file
         }),
-      `${displayName} was added to the library.`
+      showSuccess ? `${displayName} was added to the library.` : undefined
     );
   }
 
   async updateAsset(
     asset: AudioAsset,
-    input: Partial<Pick<AudioAsset, 'name' | 'category' | 'role'>>,
+    input: Partial<Pick<AudioAsset, 'name' | 'category' | 'role' | 'subtitle' | 'mood' | 'icon'>>,
     success?: string
   ) {
     return this.run(
@@ -250,6 +320,109 @@ export class SoundkeepClient {
           body: JSON.stringify(input)
         }),
       success
+    );
+  }
+
+  async uploadArtwork(asset: AudioAsset, file: File) {
+    return this.run(
+      `artwork-${asset.id}`,
+      () =>
+        this.request(`/api/library/${asset.id}/artwork`, {
+          method: 'POST',
+          headers: { 'content-type': file.type },
+          body: file
+        }),
+      `Artwork for ${asset.name} was updated.`
+    );
+  }
+
+  async removeArtwork(asset: AudioAsset) {
+    return this.run(
+      `artwork-${asset.id}`,
+      () =>
+        this.request(`/api/library/${asset.id}/artwork`, {
+          method: 'DELETE',
+          body: '{}'
+        }),
+      `Artwork for ${asset.name} was removed.`
+    );
+  }
+
+  async setActiveScene(activeSceneId: string | null) {
+    return this.configurePlayback({ activeSceneId });
+  }
+
+  async configurePlayback(input: {
+    activeSceneId?: string | null;
+    shuffle?: boolean;
+    repeatMode?: RepeatMode;
+  }) {
+    return this.run('playback-settings', () =>
+      this.request('/api/playback', {
+        method: 'PATCH',
+        body: JSON.stringify(input)
+      })
+    );
+  }
+
+  async nextTrack() {
+    return this.run('next-track', () =>
+      this.request('/api/playback/next', { method: 'POST', body: '{}' })
+    );
+  }
+
+  async previousTrack() {
+    return this.run('previous-track', () =>
+      this.request('/api/playback/previous', { method: 'POST', body: '{}' })
+    );
+  }
+
+  async createScene(input: {
+    name: string;
+    description?: string;
+    trackIds: string[];
+    effectIds: string[];
+  }) {
+    return this.run(
+      'create-scene',
+      () =>
+        this.request('/api/scenes', {
+          method: 'POST',
+          body: JSON.stringify(input)
+        }),
+      `${input.name} was created.`
+    );
+  }
+
+  async updateScene(
+    scene: SceneCollection,
+    input: {
+      name?: string;
+      description?: string;
+      trackIds?: string[];
+      effectIds?: string[];
+    }
+  ) {
+    return this.run(
+      `edit-scene-${scene.id}`,
+      () =>
+        this.request(`/api/scenes/${scene.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(input)
+        }),
+      `${input.name ?? scene.name} was updated.`
+    );
+  }
+
+  async deleteScene(scene: SceneCollection) {
+    return this.run(
+      `delete-scene-${scene.id}`,
+      () =>
+        this.request(`/api/scenes/${scene.id}`, {
+          method: 'DELETE',
+          body: '{}'
+        }),
+      `${scene.name} was deleted.`
     );
   }
 
@@ -292,7 +465,7 @@ export class SoundkeepClient {
 
   soundboardGroups(): Array<[string, AudioAsset[]]> {
     const groups = new Map<string, AudioAsset[]>();
-    for (const asset of this.soundboardAssets) {
+    for (const asset of this.visibleSoundboardAssets) {
       groups.set(asset.category, [...(groups.get(asset.category) ?? []), asset]);
     }
     return [...groups.entries()].sort(([left], [right]) => left.localeCompare(right));

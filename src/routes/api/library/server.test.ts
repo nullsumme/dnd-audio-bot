@@ -8,14 +8,19 @@ describe('library upload request metadata', () => {
       filename: 'Donnerstoß.mp3',
       name: 'Donnerstoß',
       category: 'Effekte',
-      role: 'soundboard'
+      role: 'soundboard',
+      subtitle: '',
+      mood: ''
     }).toString();
 
     expect(_parseUploadMetadata(url)).toEqual({
       filename: 'Donnerstoß.mp3',
       name: 'Donnerstoß',
       category: 'Effekte',
-      role: 'soundboard'
+      role: 'soundboard',
+      subtitle: '',
+      mood: '',
+      icon: undefined
     });
   });
 

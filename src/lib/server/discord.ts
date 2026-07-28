@@ -604,6 +604,7 @@ export class DiscordService {
       channelId: channel?.id ?? null,
       channelName: channel?.name ?? null,
       playerState: playerState.status,
+      listenerCount: this.#listenerCount(channel),
       playableConnections: audioPlayable ? this.player.playable.length : 0,
       subscribed:
         audioPlayable &&
@@ -873,6 +874,19 @@ export class DiscordService {
     if (!channelId) return null;
     const channel = this.client.channels.cache.get(channelId);
     return channel?.type === ChannelType.GuildVoice ? channel : null;
+  }
+
+  #listenerCount(channel: VoiceBasedChannel | null): number {
+    if (!channel) return 0;
+    const botId = this.client.user?.id;
+    let count = 0;
+    for (const voiceState of channel.guild.voiceStates.cache.values()) {
+      if (voiceState.channelId !== channel.id || voiceState.id === botId) continue;
+      const member = channel.guild.members.cache.get(voiceState.id);
+      if (!member || member.user.bot) continue;
+      count += 1;
+    }
+    return count;
   }
 
   #watchConnection(owned: OwnedConnection): void {

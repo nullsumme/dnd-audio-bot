@@ -1,5 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import { z } from 'zod';
+import { ASSET_ICONS } from '$lib/asset-metadata';
 import { apiError } from '$lib/server/http';
 import { LibraryQuotaError, UploadBusyError, UploadLimitError } from '$lib/server/library';
 import { runtime } from '$lib/server/runtime';
@@ -8,7 +9,10 @@ const uploadSchema = z.object({
   filename: z.string().min(1).max(180),
   name: z.string().max(100).default(''),
   category: z.string().max(40).default(''),
-  role: z.enum(['ambience', 'soundboard'])
+  role: z.enum(['ambience', 'soundboard']),
+  subtitle: z.string().max(100).default(''),
+  mood: z.string().max(60).default(''),
+  icon: z.enum(ASSET_ICONS).optional()
 });
 
 export function _parseUploadMetadata(url: URL) {
@@ -16,7 +20,10 @@ export function _parseUploadMetadata(url: URL) {
     filename: url.searchParams.get('filename') ?? '',
     name: url.searchParams.get('name') ?? '',
     category: url.searchParams.get('category') ?? '',
-    role: url.searchParams.get('role') ?? ''
+    role: url.searchParams.get('role') ?? '',
+    subtitle: url.searchParams.get('subtitle') ?? '',
+    mood: url.searchParams.get('mood') ?? '',
+    icon: url.searchParams.get('icon') ?? undefined
   });
 }
 
@@ -48,11 +55,15 @@ export async function POST({ request, url }: { request: Request; url: URL }) {
       originalFilename: fields.filename,
       name: fields.name,
       category: fields.category,
-      role: fields.role
+      role: fields.role,
+      subtitle: fields.subtitle,
+      mood: fields.mood,
+      icon: fields.icon
     });
     if (runtime.capabilities.ffmpeg && asset.role === 'soundboard') {
       void runtime.pcmCache.prepare(asset, runtime.library.filePath(asset));
     }
+    runtime.activity.record('library', 'upload', `Uploaded ${asset.name}`);
     return json({ asset }, { status: 201 });
   } catch (cause) {
     if (request.body && !request.body.locked) {

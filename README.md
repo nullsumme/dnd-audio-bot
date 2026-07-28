@@ -1,20 +1,25 @@
 # Soundkeep
 
 Soundkeep is a self-hosted Discord background-music controller and soundboard for tabletop sessions. Its
-desktop-first SvelteKit dashboard gives the game master two clear audio lines: one looping background and
-one soundboard clip that plays without interrupting the background.
+desktop-first SvelteKit dashboard gives the game master two clear audio lines: one transport-controlled
+background queue and one low-latency soundboard clip that plays without interrupting it.
 
 ## What it does
 
 - Connects to any voice channel visible to the bot from the web dashboard.
-- Selects one looping background track from the library.
+- Builds persistent scenes from ordered background tracks and sound effects.
+- Provides real pause, resume, seek, previous, next, shuffle, repeat-one, repeat-all, and automatic
+  background queue advancement.
 - Plays configured soundboard buttons over the uninterrupted background; a new button replaces the current
   soundboard clip.
 - Streams uploaded MP3s into one managed local library, validates them with FFprobe and a full FFmpeg
   decode, then commits the file and index atomically.
-- Uploads, previews, renames, categorizes, reassigns, searches, and deletes audio assets.
+- Supports drag-and-drop batch MP3 uploads, previews, names, categories, subtitles, moods, custom icons,
+  PNG/JPEG artwork, placement changes, search, and deletion.
 - Adds and removes soundboard buttons without deleting their library assets.
-- Persists the audio library on one data volume.
+- Shows the current Discord bitrate, real human listener count, authoritative playback position, and recent
+  server activity.
+- Persists the audio library, artwork, scenes, and settings on one data volume.
 - Supports Discord's required DAVE voice encryption.
 - Ships as a non-root container and a production Helm chart.
 
@@ -35,9 +40,12 @@ presets are available in Settings and remain capped by Discord's channel bitrate
 The two mixer lines receive fixed bus headroom, preventing hard-clipped peaks without changing the
 background gain when a sound effect starts or ends and without adding lookahead latency.
 Per-line PCM queues use low-latency high/low-watermark backpressure, pausing their FFmpeg decoder without
-ever consuming a partial PCM frame. End-of-file tails are drained exactly once. The mixer primes a bounded
-three-frame (60 ms) output lead and catches up at most three ordered frames after a delayed event-loop timer,
-protecting Discord from starvation without deleting PCM or allowing an unbounded latency queue.
+ever consuming a partial PCM frame. End-of-file tails are drained exactly once. Playback position is counted
+from PCM frames actually consumed by the mixer, so pause and seek remain aligned with the Discord output.
+The mixer primes a bounded three-frame (60 ms) output lead and catches up at most three ordered frames after
+a delayed event-loop timer, protecting Discord from starvation without deleting PCM or allowing an
+unbounded latency queue. Short soundboard effects can start from the decoded PCM cache without an FFmpeg
+startup round trip.
 
 ## Discord setup
 
@@ -59,7 +67,7 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>. Uploaded files and their metadata live in the `soundkeep-data` volume.
+Open <http://localhost:3000>. MP3s, artwork, scenes, and settings live in the `soundkeep-data` volume.
 
 ## Native development
 
@@ -98,7 +106,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.4.5 \
+  --version 0.5.0 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -117,11 +125,13 @@ voice connection and one writable library volume.
 | `FFMPEG_PATH`               |                   `ffmpeg` | FFmpeg executable                                            |
 | `FFPROBE_PATH`              |                  `ffprobe` | FFprobe executable                                           |
 | `MAX_UPLOAD_BYTES`          |                `262144000` | Per-file MP3 upload limit                                    |
+| `MAX_ARTWORK_BYTES`         |                  `5242880` | Per-file PNG/JPEG artwork upload limit                       |
 | `MAX_LIBRARY_BYTES`         |               `8589934592` | Total managed-library quota                                  |
 | `MIN_FREE_BYTES`            |                `268435456` | Free-space reserve maintained on the data volume             |
 | `MAX_CONCURRENT_UPLOADS`    |                        `1` | Concurrent streamed upload/validation jobs                   |
 | `MAX_PCM_CACHE_BYTES`       |                 `67108864` | Aggregate in-memory cache for low-latency soundboard effects |
 | `MAX_PCM_CACHE_ENTRY_BYTES` |                 `33554432` | Per-effect decoded PCM cache limit                           |
+| `ACTIVITY_LOG_CAPACITY`     |                      `100` | In-memory recent server events retained for the dashboard    |
 | `ORIGIN`                    | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
 
 Changing the bitrate in the dashboard persists the selected mode in `settings.json` on the data volume and

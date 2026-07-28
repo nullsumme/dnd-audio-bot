@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioAsset } from '$lib/types';
 
 interface CapturedDecoder {
-  input: { path: string; loop: boolean };
+  input: { path: string; loop: boolean; startMilliseconds?: number };
   callbacks: {
     onData(chunk: Buffer): boolean;
     onPlaying(): void;
@@ -92,6 +92,12 @@ function asset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
     mimeType: 'audio/mpeg',
     size: 1_024,
     duration: 10,
+    subtitle: '',
+    mood: '',
+    icon: role === 'ambience' ? 'music' : 'sparkles',
+    artworkFilename: null,
+    artworkMimeType: null,
+    artworkSize: 0,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -137,6 +143,38 @@ describe('AudioEngine source lifecycle', () => {
     captured.decoders[1].callbacks.onEnd(null);
     expect(engine.list()).toMatchObject([{ id: tavern.id, role: 'ambience' }]);
     expect(engine.list().some((source) => source.id === thunder.id)).toBe(false);
+  });
+
+  it('publishes duration, position and the role-default repeat mode', () => {
+    const ambience = engine.playAsset(
+      asset('Rain', 'ambience'),
+      '/data/rain.mp3',
+      'ambience',
+      0.7,
+      null,
+      { offsetMilliseconds: 2_500 }
+    );
+    const effect = engine.playAsset(
+      asset('Thunder', 'soundboard'),
+      '/data/thunder.mp3',
+      'soundboard'
+    );
+
+    expect(ambience).toMatchObject({
+      duration: 10,
+      positionMilliseconds: 2_500,
+      repeat: true
+    });
+    expect(effect).toMatchObject({
+      duration: 10,
+      positionMilliseconds: 0,
+      repeat: false
+    });
+    expect(captured.decoders[0].input).toEqual({
+      path: '/data/rain.mp3',
+      loop: true,
+      startMilliseconds: 2_500
+    });
   });
 
   it('coalesces rapid same-role replacements before starting another FFmpeg process', async () => {
@@ -205,6 +243,146 @@ describe('AudioEngine source lifecycle', () => {
     await vi.advanceTimersByTimeAsync(20);
     expect(engine.list()).toEqual([]);
     expect(engine.mixer.diagnostics.finalPartialFramesPadded).toBe(1);
+  });
+
+  it('pauses and resumes one source without restarting its decoder or advancing its position', async () => {
+    vi.useFakeTimers();
+    engine.mixer.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    const ambience = engine.playAsset(asset('Forest', 'ambience'), '/data/forest.mp3', 'ambience');
+    const decoder = captured.decoders[0];
+    decoder.callbacks.onPlaying();
+    decoder.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME * 3));
+
+    await vi.advanceTimersByTimeAsync(20);
+    expect(engine.getSource(ambience.id).positionMilliseconds).toBe(20);
+
+    expect(engine.pause(ambience.id).state).toBe('paused');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(engine.getSource(ambience.id)).toMatchObject({
+      state: 'paused',
+      positionMilliseconds: 20
+    });
+    expect(captured.decoders).toHaveLength(1);
+
+    expect(engine.resume(ambience.id).state).toBe('playing');
+    await vi.advanceTimersByTimeAsync(20);
+    expect(engine.getSource(ambience.id).positionMilliseconds).toBe(40);
+    expect(captured.decoders).toHaveLength(1);
+  });
+
+  it('coalesces rapid seeks behind decoder shutdown and starts only the latest offset', async () => {
+    const ambience = engine.playAsset(asset('Forest', 'ambience'), '/data/forest.mp3', 'ambience');
+    const original = captured.decoders[0];
+
+    const firstSeek = engine.seek(ambience.id, 3_000);
+    const secondSeek = engine.seek(ambience.id, 7_500);
+    expect(original.stopRequested).toBe(true);
+    expect(captured.decoders).toHaveLength(1);
+    expect(engine.getSource(ambience.id)).toMatchObject({
+      state: 'starting',
+      positionMilliseconds: 7_500
+    });
+    expect(original.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME))).toBe(false);
+
+    original.finishStop();
+    await Promise.all([firstSeek, secondSeek]);
+    await vi.waitFor(() => expect(captured.decoders).toHaveLength(2));
+    expect(captured.decoders[1].input).toEqual({
+      path: '/data/forest.mp3',
+      loop: true,
+      startMilliseconds: 7_500
+    });
+  });
+
+  it('updates repeat and position in one generation-safe decoder restart', async () => {
+    const ambience = engine.playAsset(asset('Forest', 'ambience'), '/data/forest.mp3', 'ambience');
+    const original = captured.decoders[0];
+
+    const updating = engine.updateSourceTransport(ambience.id, {
+      repeat: false,
+      positionMilliseconds: 4_000
+    });
+    original.finishStop();
+    await updating;
+    await vi.waitFor(() => expect(captured.decoders).toHaveLength(2));
+
+    expect(engine.getSource(ambience.id)).toMatchObject({
+      repeat: false,
+      positionMilliseconds: 4_000
+    });
+    expect(captured.decoders[1].input).toEqual({
+      path: '/data/forest.mp3',
+      loop: false,
+      startMilliseconds: 4_000
+    });
+  });
+
+  it('seeks cached PCM effects without falling back to FFmpeg', async () => {
+    const pcm = Buffer.alloc(BYTES_PER_FRAME * 3);
+    const effect = engine.playAsset(
+      asset('Thunder', 'soundboard'),
+      '/data/thunder.mp3',
+      'soundboard',
+      0.8,
+      pcm
+    );
+
+    await engine.seek(effect.id, 20);
+
+    expect(captured.decoders).toHaveLength(0);
+    expect(captured.pcmDecoders).toHaveLength(2);
+    expect(captured.pcmDecoders[0].stopRequested).toBe(true);
+    expect(captured.pcmDecoders[1].pcm).toHaveLength(BYTES_PER_FRAME * 2);
+  });
+
+  it('wraps authoritative consumed position for repeating sources', async () => {
+    vi.useFakeTimers();
+    engine.mixer.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    const ambience = engine.playAsset(
+      asset('Forest', 'ambience'),
+      '/data/forest.mp3',
+      'ambience',
+      0.7,
+      null,
+      { duration: 0.03 }
+    );
+    const decoder = captured.decoders[0];
+    decoder.callbacks.onPlaying();
+    decoder.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME * 2));
+
+    await vi.advanceTimersByTimeAsync(40);
+
+    expect(engine.getSource(ambience.id).positionMilliseconds).toBe(10);
+  });
+
+  it('emits a completed event after the final PCM tail is consumed', async () => {
+    vi.useFakeTimers();
+    engine.mixer.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    const listener = vi.fn();
+    engine.onSourceEnded(listener);
+    const effect = engine.playAsset(asset('Sword', 'soundboard'), '/data/sword.mp3', 'soundboard');
+    const decoder = captured.decoders[0];
+    decoder.callbacks.onPlaying();
+    decoder.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME + 1_000));
+    decoder.callbacks.onEnd(null);
+
+    await vi.advanceTimersByTimeAsync(20);
+    expect(listener).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(20);
+
+    expect(listener).toHaveBeenCalledWith({
+      reason: 'completed',
+      source: expect.objectContaining({
+        id: effect.id,
+        role: 'soundboard',
+        positionMilliseconds: 25,
+        repeat: false
+      })
+    });
+    expect(engine.list()).toEqual([]);
   });
 
   it('opens the ambience circuit after bounded decoder failures', async () => {

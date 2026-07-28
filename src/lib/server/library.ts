@@ -14,13 +14,16 @@ import {
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { ASSET_ICONS, type AssetIcon, type ArtworkMimeType } from '$lib/asset-metadata';
 import type { AssetRole, AudioAsset } from '$lib/types';
 import { config } from './config';
 
 const execFileAsync = promisify(execFile);
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
 const INDEX_TEMP_PREFIX = '.library-index-';
 const UPLOAD_TEMP_PREFIX = '.upload-';
+const ARTWORK_TEMP_PREFIX = '.artwork-';
+export const MAX_ARTWORK_BYTES = 5 * 1024 * 1024;
 
 interface LibraryIndex {
   version: number;
@@ -36,11 +39,17 @@ interface UploadReservation {
   remaining: number;
 }
 
+interface ArtworkReservation {
+  quotaBudget: number;
+  diskBudget: number;
+}
+
 export interface AudioLibraryOptions {
   maxUploadBytes?: number;
   maxLibraryBytes?: number;
   minFreeBytes?: number;
   maxConcurrentUploads?: number;
+  maxArtworkBytes?: number;
   ffmpegPath?: string;
   ffprobePath?: string;
 }
@@ -52,6 +61,9 @@ export interface AddAudioInput {
   name: string;
   category: string;
   role: AssetRole;
+  subtitle?: string;
+  mood?: string;
+  icon?: AssetIcon;
 }
 
 export class UploadBusyError extends Error {}
@@ -81,6 +93,10 @@ function cleanText(value: string, fallback: string, maxLength: number): string {
   return cleaned || fallback;
 }
 
+function cleanOptionalText(value: string | undefined, maxLength: number): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
 function cleanOriginalFilename(value: string): string {
   return basename(value.replaceAll('\\', '/'))
     .replace(/[\u0000-\u001f\u007f]/g, '_')
@@ -91,6 +107,12 @@ function isManagedFilename(filename: string): boolean {
   if (!filename || filename.length > 220 || filename.includes('\0')) return false;
   if (basename(filename) !== filename || extname(filename).toLowerCase() !== '.mp3') return false;
   return filename !== '.' && filename !== '..';
+}
+
+function isManagedArtworkFilename(filename: string): boolean {
+  if (!filename || filename.length > 220 || filename.includes('\0')) return false;
+  if (basename(filename) !== filename) return false;
+  return ['.jpg', '.jpeg', '.png'].includes(extname(filename).toLowerCase());
 }
 
 function isNodeError(error: unknown, code: string): boolean {
@@ -108,11 +130,13 @@ async function syncDirectory(path: string): Promise<void> {
 
 export class AudioLibrary {
   readonly audioDir: string;
+  readonly artworkDir: string;
   readonly indexPath: string;
   readonly maxUploadBytes: number;
   readonly maxLibraryBytes: number;
   readonly minFreeBytes: number;
   readonly maxConcurrentUploads: number;
+  readonly maxArtworkBytes: number;
   readonly ffmpegPath: string;
   readonly ffprobePath: string;
 
@@ -129,23 +153,28 @@ export class AudioLibrary {
     options: AudioLibraryOptions = {}
   ) {
     this.audioDir = join(dataDir, 'audio');
+    this.artworkDir = join(dataDir, 'artwork');
     this.indexPath = join(dataDir, 'library.json');
     this.maxUploadBytes = options.maxUploadBytes ?? config.maxUploadBytes;
     this.maxLibraryBytes = options.maxLibraryBytes ?? config.maxLibraryBytes;
     this.minFreeBytes = options.minFreeBytes ?? config.minFreeBytes;
     this.maxConcurrentUploads = options.maxConcurrentUploads ?? config.maxConcurrentUploads;
+    this.maxArtworkBytes = options.maxArtworkBytes ?? config.maxArtworkBytes;
     this.ffmpegPath = options.ffmpegPath ?? config.ffmpegPath;
     this.ffprobePath = options.ffprobePath ?? config.ffprobePath;
   }
 
   async initialize(): Promise<void> {
-    await mkdir(this.audioDir, { recursive: true });
+    await Promise.all([
+      mkdir(this.audioDir, { recursive: true }),
+      mkdir(this.artworkDir, { recursive: true })
+    ]);
     let parsed: LibraryIndex = { version: INDEX_VERSION, assets: [] };
     let mustPersist = false;
 
     try {
       parsed = JSON.parse(await readFile(this.indexPath, 'utf8')) as LibraryIndex;
-      if (![1, 2, INDEX_VERSION].includes(parsed.version) || !Array.isArray(parsed.assets)) {
+      if (![1, 2, 3, INDEX_VERSION].includes(parsed.version) || !Array.isArray(parsed.assets)) {
         throw new Error('Unsupported library index version.');
       }
       mustPersist = parsed.version !== INDEX_VERSION;
@@ -196,9 +225,33 @@ export class AudioLibrary {
         continue;
       }
 
-      const reconciledAsset =
+      let reconciledAsset =
         asset.size === targetStat.size ? asset : { ...asset, size: targetStat.size };
       if (reconciledAsset !== asset) mustPersist = true;
+
+      if (reconciledAsset.artworkFilename) {
+        const artworkPath = this.#managedArtworkPath(reconciledAsset.artworkFilename);
+        const artworkStat = isManagedArtworkFilename(reconciledAsset.artworkFilename)
+          ? await lstat(artworkPath).catch(() => null)
+          : null;
+        if (
+          !artworkStat?.isFile() ||
+          artworkStat.isSymbolicLink() ||
+          artworkStat.size === 0 ||
+          artworkStat.size > this.maxArtworkBytes
+        ) {
+          reconciledAsset = {
+            ...reconciledAsset,
+            artworkFilename: null,
+            artworkMimeType: null,
+            artworkSize: 0
+          };
+          mustPersist = true;
+        } else if (reconciledAsset.artworkSize !== artworkStat.size) {
+          reconciledAsset = { ...reconciledAsset, artworkSize: artworkStat.size };
+          mustPersist = true;
+        }
+      }
       reconciled.set(asset.id, reconciledAsset);
     }
 
@@ -206,6 +259,27 @@ export class AudioLibrary {
     for (const entry of await readdir(this.audioDir, { withFileTypes: true })) {
       if (referencedFiles.has(entry.name) && entry.isFile() && !entry.isSymbolicLink()) continue;
       await rm(join(this.audioDir, entry.name), { force: true, recursive: entry.isDirectory() });
+      mustPersist = true;
+    }
+
+    const referencedArtwork = new Set(
+      [...reconciled.values()]
+        .map((asset) => asset.artworkFilename)
+        .filter((filename): filename is string => Boolean(filename))
+    );
+    for (const entry of await readdir(this.artworkDir, { withFileTypes: true })) {
+      if (
+        referencedArtwork.has(entry.name) &&
+        entry.isFile() &&
+        !entry.isSymbolicLink() &&
+        isManagedArtworkFilename(entry.name)
+      ) {
+        continue;
+      }
+      await rm(join(this.artworkDir, entry.name), {
+        force: true,
+        recursive: entry.isDirectory()
+      });
       mustPersist = true;
     }
 
@@ -263,6 +337,12 @@ export class AudioLibrary {
         mimeType: 'audio/mpeg',
         size,
         duration: inspection.duration,
+        subtitle: cleanOptionalText(input.subtitle, 100),
+        mood: cleanOptionalText(input.mood, 60),
+        icon: input.icon ?? (input.role === 'soundboard' ? 'sparkles' : 'music'),
+        artworkFilename: null,
+        artworkMimeType: null,
+        artworkSize: 0,
         createdAt: now,
         updatedAt: now
       };
@@ -290,7 +370,7 @@ export class AudioLibrary {
 
   async update(
     id: string,
-    input: Partial<Pick<AudioAsset, 'name' | 'category' | 'role'>>
+    input: Partial<Pick<AudioAsset, 'name' | 'category' | 'role' | 'subtitle' | 'mood' | 'icon'>>
   ): Promise<AudioAsset> {
     return this.#mutationLock.run(async () => {
       const current = this.#assets.get(id);
@@ -303,6 +383,10 @@ export class AudioLibrary {
             ? current.category
             : cleanText(input.category, current.category, 40),
         role: input.role ?? current.role,
+        subtitle:
+          input.subtitle === undefined ? current.subtitle : cleanOptionalText(input.subtitle, 100),
+        mood: input.mood === undefined ? current.mood : cleanOptionalText(input.mood, 60),
+        icon: input.icon ?? current.icon,
         updatedAt: new Date().toISOString()
       };
       const next = new Map(this.#assets);
@@ -348,6 +432,10 @@ export class AudioLibrary {
 
         this.#assets = next;
         await rm(target, { force: true });
+        if (asset.artworkFilename) {
+          await rm(this.#managedArtworkPath(asset.artworkFilename), { force: true });
+          await syncDirectory(this.artworkDir);
+        }
         await syncDirectory(this.audioDir);
         return asset;
       });
@@ -363,6 +451,135 @@ export class AudioLibrary {
       throw new Error('The audio asset has an unsafe filename.');
     }
     return path;
+  }
+
+  artworkPath(asset: AudioAsset): string | null {
+    return asset.artworkFilename ? this.#managedArtworkPath(asset.artworkFilename) : null;
+  }
+
+  async setArtwork(id: string, bytes: Uint8Array, mimeType: ArtworkMimeType): Promise<AudioAsset> {
+    if (bytes.byteLength === 0) throw new Error('The artwork file is empty.');
+    if (bytes.byteLength > this.maxArtworkBytes) {
+      const limit =
+        this.maxArtworkBytes >= 1024 * 1024
+          ? `${Math.round(this.maxArtworkBytes / 1024 / 1024)} MB`
+          : `${this.maxArtworkBytes} bytes`;
+      throw new Error(`Artwork must be ${limit} or smaller.`);
+    }
+    this.#validateArtwork(bytes, mimeType);
+
+    return this.#mutationLock.run(async () => {
+      const current = this.#assets.get(id);
+      if (!current) throw new Error('Audio asset not found.');
+      const reservation = await this.#reserveArtwork(current.artworkSize, bytes.byteLength);
+      const extension = mimeType === 'image/png' ? '.png' : '.jpg';
+      const filename = `${id}-${randomUUID()}${extension}`;
+      const temporaryPath = join(this.artworkDir, `${ARTWORK_TEMP_PREFIX}${randomUUID()}.tmp`);
+      const targetPath = this.#managedArtworkPath(filename);
+      let targetExists = false;
+      let committed = false;
+      try {
+        const file = await open(
+          temporaryPath,
+          fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY,
+          0o640
+        );
+        try {
+          await file.writeFile(bytes);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+
+        const updated: AudioAsset = {
+          ...current,
+          artworkFilename: filename,
+          artworkMimeType: mimeType,
+          artworkSize: bytes.byteLength,
+          updatedAt: new Date().toISOString()
+        };
+        const next = new Map(this.#assets);
+        next.set(id, updated);
+        await rename(temporaryPath, targetPath);
+        targetExists = true;
+        await syncDirectory(this.artworkDir);
+        await this.#writeIndex(next);
+        this.#assets = next;
+        committed = true;
+
+        if (current.artworkFilename) {
+          await rm(this.#managedArtworkPath(current.artworkFilename), { force: true }).catch(
+            (error) => {
+              console.error(
+                `Audio artwork cleanup: ${
+                  error instanceof Error ? error.message : 'unknown cleanup error'
+                }`
+              );
+            }
+          );
+          await syncDirectory(this.artworkDir).catch(() => undefined);
+        }
+        return updated;
+      } finally {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+        if (!committed && targetExists) {
+          await rm(targetPath, { force: true }).catch(() => undefined);
+          await syncDirectory(this.artworkDir).catch(() => undefined);
+        }
+        this.#releaseArtwork(reservation);
+      }
+    });
+  }
+
+  async removeArtwork(id: string): Promise<AudioAsset> {
+    return this.#mutationLock.run(async () => {
+      const current = this.#assets.get(id);
+      if (!current) throw new Error('Audio asset not found.');
+      if (!current.artworkFilename) return current;
+      const updated: AudioAsset = {
+        ...current,
+        artworkFilename: null,
+        artworkMimeType: null,
+        artworkSize: 0,
+        updatedAt: new Date().toISOString()
+      };
+      const next = new Map(this.#assets);
+      next.set(id, updated);
+      await this.#writeIndex(next);
+      this.#assets = next;
+      await rm(this.#managedArtworkPath(current.artworkFilename), { force: true });
+      await syncDirectory(this.artworkDir);
+      return updated;
+    });
+  }
+
+  #managedArtworkPath(filename: string): string {
+    if (!isManagedArtworkFilename(filename)) {
+      throw new Error('The audio artwork has an unsafe filename.');
+    }
+    const path = resolve(this.artworkDir, filename);
+    if (dirname(path) !== resolve(this.artworkDir)) {
+      throw new Error('The audio artwork has an unsafe filename.');
+    }
+    return path;
+  }
+
+  #validateArtwork(bytes: Uint8Array, mimeType: ArtworkMimeType): void {
+    const validPng =
+      bytes.byteLength >= 8 &&
+      Buffer.from(bytes.subarray(0, 8)).equals(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      );
+    const validJpeg =
+      bytes.byteLength >= 4 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff &&
+      bytes.at(-2) === 0xff &&
+      bytes.at(-1) === 0xd9;
+    if ((mimeType === 'image/png' && !validPng) || (mimeType === 'image/jpeg' && !validJpeg)) {
+      throw new Error('Artwork must be a valid PNG or JPEG image.');
+    }
   }
 
   #migrateAsset(value: unknown, version: number): AudioAsset | null {
@@ -405,6 +622,31 @@ export class AudioLibrary {
         record.duration > 0
           ? record.duration
           : null,
+      subtitle: cleanOptionalText(
+        typeof record.subtitle === 'string' ? record.subtitle : undefined,
+        100
+      ),
+      mood: cleanOptionalText(typeof record.mood === 'string' ? record.mood : undefined, 60),
+      icon: ASSET_ICONS.includes(record.icon as AssetIcon)
+        ? (record.icon as AssetIcon)
+        : role === 'soundboard'
+          ? 'sparkles'
+          : 'music',
+      artworkFilename:
+        typeof record.artworkFilename === 'string' &&
+        isManagedArtworkFilename(record.artworkFilename)
+          ? record.artworkFilename
+          : null,
+      artworkMimeType:
+        record.artworkMimeType === 'image/jpeg' || record.artworkMimeType === 'image/png'
+          ? record.artworkMimeType
+          : null,
+      artworkSize:
+        typeof record.artworkSize === 'number' &&
+        Number.isFinite(record.artworkSize) &&
+        record.artworkSize >= 0
+          ? record.artworkSize
+          : 0,
       createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
       updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : new Date().toISOString()
     };
@@ -418,7 +660,7 @@ export class AudioLibrary {
         );
       }
       const budget = contentLength ?? this.maxUploadBytes;
-      const currentBytes = this.list().reduce((total, asset) => total + asset.size, 0);
+      const currentBytes = this.#managedBytes();
       if (currentBytes + this.#uploadBudgets + budget > this.maxLibraryBytes) {
         throw new LibraryQuotaError('The audio library storage quota would be exceeded.');
       }
@@ -442,7 +684,7 @@ export class AudioLibrary {
     if (requiredBudget <= reservation.budget) return;
     const delta = requiredBudget - reservation.budget;
     await this.#quotaLock.run(async () => {
-      const currentBytes = this.list().reduce((total, asset) => total + asset.size, 0);
+      const currentBytes = this.#managedBytes();
       if (currentBytes + this.#uploadBudgets + delta > this.maxLibraryBytes) {
         throw new LibraryQuotaError('The audio library storage quota would be exceeded.');
       }
@@ -458,6 +700,28 @@ export class AudioLibrary {
     this.#activeUploads -= 1;
     this.#uploadBudgets -= reservation.budget;
     this.#remainingDiskReservations -= reservation.remaining;
+  }
+
+  async #reserveArtwork(replacedBytes: number, newBytes: number): Promise<ArtworkReservation> {
+    return this.#quotaLock.run(async () => {
+      const quotaBudget = Math.max(0, newBytes - replacedBytes);
+      if (this.#managedBytes() + this.#uploadBudgets + quotaBudget > this.maxLibraryBytes) {
+        throw new LibraryQuotaError('The audio library storage quota would be exceeded.');
+      }
+      await this.#assertFreeSpace(newBytes);
+      this.#uploadBudgets += quotaBudget;
+      this.#remainingDiskReservations += newBytes;
+      return { quotaBudget, diskBudget: newBytes };
+    });
+  }
+
+  #releaseArtwork(reservation: ArtworkReservation): void {
+    this.#uploadBudgets -= reservation.quotaBudget;
+    this.#remainingDiskReservations -= reservation.diskBudget;
+  }
+
+  #managedBytes(): number {
+    return this.list().reduce((total, asset) => total + asset.size + asset.artworkSize, 0);
   }
 
   async #assertFreeSpace(additionalReservation: number): Promise<void> {

@@ -1,22 +1,29 @@
 import type { DiscordBitrateMode } from '$lib/audio-quality';
 import type { ApplicationState, DiscordStatus } from '$lib/types';
+import { ActivityLog } from './activity';
 import { AudioEngine } from './audio/engine';
 import { SoundboardPcmCache } from './audio/pcm-cache';
 import { config } from './config';
 import { DiscordService } from './discord';
 import { AudioLibrary } from './library';
+import { BackgroundPlaybackCoordinator } from './playback';
 import { commandAvailable } from './process';
+import { SceneStore } from './scenes';
 import { ApplicationSettingsStore } from './settings';
 
 export class ApplicationRuntime {
   readonly library = new AudioLibrary();
+  readonly scenes = new SceneStore();
   readonly settings = new ApplicationSettingsStore();
+  readonly activity = new ActivityLog(config.activityLogCapacity);
   readonly pcmCache = new SoundboardPcmCache();
   readonly engine = new AudioEngine();
+  readonly playback = new BackgroundPlaybackCoordinator(this.library, this.scenes, this.engine);
   readonly discord = new DiscordService(this.engine.mixer);
   capabilities = { ffmpeg: false, ffprobe: false };
   #initialization: Promise<void> | null = null;
   #bitrateMutationBarrier: Promise<void> = Promise.resolve();
+  #catalogMutationBarrier: Promise<void> = Promise.resolve();
   #shuttingDown = false;
 
   initialize(): Promise<void> {
@@ -27,11 +34,15 @@ export class ApplicationRuntime {
 
   async snapshot(): Promise<ApplicationState> {
     await this.initialize();
+    const playback = await this.playback.reconcile();
     return {
       discord: this.discord.status(),
       guilds: this.discord.guilds(),
       sources: this.engine.list(),
       assets: this.library.list(),
+      scenes: this.scenes.list(),
+      activity: this.activity.snapshot(),
+      playback,
       masterVolume: this.engine.masterVolume,
       pcmCache: this.pcmCache.status(),
       capabilities: { ...this.capabilities }
@@ -40,6 +51,18 @@ export class ApplicationRuntime {
 
   isReady(): boolean {
     return this.discord.status().ready && this.capabilities.ffmpeg && this.capabilities.ffprobe;
+  }
+
+  mutateCatalog<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.#shuttingDown) {
+      return Promise.reject(new Error('The application runtime is shutting down.'));
+    }
+    const result = this.#catalogMutationBarrier.then(operation, operation);
+    this.#catalogMutationBarrier = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   setDiscordBitrateMode(mode: DiscordBitrateMode): Promise<DiscordStatus> {
@@ -76,14 +99,24 @@ export class ApplicationRuntime {
 
   async shutdown(): Promise<void> {
     this.#shuttingDown = true;
-    await this.#bitrateMutationBarrier.catch(() => undefined);
+    await Promise.all([
+      this.#bitrateMutationBarrier.catch(() => undefined),
+      this.#catalogMutationBarrier.catch(() => undefined)
+    ]);
     await this.discord.shutdown();
+    this.playback.destroy();
     this.engine.destroy();
     await this.pcmCache.shutdown();
   }
 
   async #initialize(): Promise<void> {
-    await Promise.all([this.library.initialize(), this.settings.initialize()]);
+    await Promise.all([
+      this.library.initialize(),
+      this.scenes.initialize(),
+      this.settings.initialize()
+    ]);
+    await this.#reconcileSceneReferences();
+    await this.playback.reconcile();
     await this.discord.setBitrateMode(this.settings.discordBitrateMode);
     const [ffmpeg, ffprobe] = await Promise.all([
       commandAvailable(config.ffmpegPath, ['-version']),
@@ -93,6 +126,22 @@ export class ApplicationRuntime {
     await this.discord.start();
     if (ffmpeg) {
       void this.pcmCache.prewarm(this.library.list(), (asset) => this.library.filePath(asset));
+    }
+  }
+
+  async #reconcileSceneReferences(): Promise<void> {
+    const roles = new Map(this.library.list().map((asset) => [asset.id, asset.role]));
+    const invalidIds = new Set<string>();
+    for (const scene of this.scenes.list()) {
+      for (const id of scene.trackIds) {
+        if (roles.get(id) !== 'ambience') invalidIds.add(id);
+      }
+      for (const id of scene.effectIds) {
+        if (roles.get(id) !== 'soundboard') invalidIds.add(id);
+      }
+    }
+    for (const id of invalidIds) {
+      await this.scenes.removeAssetReferences(id);
     }
   }
 }
