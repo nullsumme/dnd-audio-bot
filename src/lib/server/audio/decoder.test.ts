@@ -47,7 +47,7 @@ describe('spawnDecoder local MP3 playback', () => {
     fakes.args.length = 0;
   });
 
-  it('uses stream looping without FFmpeg wall-clock throttling', () => {
+  it('uses bounded probing and single-thread decoding without wall-clock throttling', () => {
     spawnDecoder(
       { path: '/data/forest.mp3', loop: true },
       {
@@ -57,8 +57,29 @@ describe('spawnDecoder local MP3 playback', () => {
       }
     );
 
-    expect(fakes.args[0]).toContain('-stream_loop');
-    expect(fakes.args[0]).not.toContain('-re');
+    const args = fakes.args[0];
+    const inputIndex = args.indexOf('-i');
+
+    expect(args).not.toContain('-re');
+    expect(args).not.toContain('+nobuffer');
+    expect(inputIndex).toBeGreaterThan(0);
+    expect(args.slice(0, inputIndex)).toEqual([
+      '-hide_banner',
+      '-loglevel',
+      'warning',
+      '-probesize',
+      '32768',
+      '-analyzeduration',
+      '0',
+      '-threads',
+      '1',
+      '-filter_threads',
+      '1',
+      '-filter_complex_threads',
+      '1',
+      '-stream_loop',
+      '-1'
+    ]);
   });
 
   it('reads complete PCM frames on demand and resumes after mixer backpressure', async () => {
