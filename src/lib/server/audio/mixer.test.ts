@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BYTES_PER_FRAME,
   FRAME_MILLISECONDS,
+  MIX_BUS_HEADROOM,
   PcmMixer,
   mixPcmFrames,
   type MixerScheduler
@@ -26,17 +27,25 @@ describe('mixPcmFrames', () => {
     expect(mixed.readInt16LE(mixed.length - 2)).toBe(4_500);
   });
 
-  it('clips positive and negative samples safely', () => {
-    const positive = mixPcmFrames([
-      { frame: constantFrame(30_000), volume: 1 },
-      { frame: constantFrame(30_000), volume: 1 }
-    ]);
-    const negative = mixPcmFrames([
-      { frame: constantFrame(-30_000), volume: 1 },
-      { frame: constantFrame(-30_000), volume: 1 }
-    ]);
-    expect(positive.readInt16LE(0)).toBe(32_767);
-    expect(negative.readInt16LE(0)).toBe(-32_768);
+  it('adds clean bus headroom instead of hard-clipping overlapping sources', () => {
+    const positive = mixPcmFrames(
+      [
+        { frame: constantFrame(32_767), volume: 0.65 },
+        { frame: constantFrame(32_767), volume: 0.85 }
+      ],
+      0.8
+    );
+    const negative = mixPcmFrames(
+      [
+        { frame: constantFrame(-32_768), volume: 0.65 },
+        { frame: constantFrame(-32_768), volume: 0.85 }
+      ],
+      0.8
+    );
+    expect(positive.readInt16LE(0)).toBe(Math.round(32_767 * MIX_BUS_HEADROOM));
+    expect(negative.readInt16LE(0)).toBe(Math.round(-32_768 * MIX_BUS_HEADROOM));
+    expect(positive.readInt16LE(0)).toBeLessThan(32_767);
+    expect(negative.readInt16LE(0)).toBeGreaterThan(-32_768);
   });
 
   it('emits silence without inputs', () => {

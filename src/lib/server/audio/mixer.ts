@@ -8,6 +8,7 @@ export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
 export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 25;
 export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME * 10;
 export const MAX_CATCH_UP_FRAMES = 10;
+export const MIX_BUS_HEADROOM = 0.98;
 
 export interface MixerScheduler {
   now(): number;
@@ -32,12 +33,20 @@ export function mixPcmFrames(frames: Array<{ frame: Buffer; volume: number }>, m
   const output = Buffer.alloc(BYTES_PER_FRAME);
   if (frames.length === 0 || master <= 0) return output;
 
+  const safeMaster = Math.max(0, Math.min(1, master));
+  const volumes = frames.map((input) => Math.max(0, Math.min(1, input.volume)));
+  const summedVolume = volumes.reduce((sum, volume) => sum + volume, 0);
+  // Reserve clean headroom before converting the summed bus back to signed
+  // 16-bit PCM. This is a distortion-free gain adjustment and adds no
+  // lookahead latency; hard clipping remains only as a defensive last resort.
+  const mixGain = summedVolume > 0 ? Math.min(safeMaster, MIX_BUS_HEADROOM / summedVolume) : 0;
+
   for (let offset = 0; offset < BYTES_PER_FRAME; offset += 2) {
     let sample = 0;
-    for (const input of frames) {
-      sample += input.frame.readInt16LE(offset) * input.volume;
+    for (let index = 0; index < frames.length; index += 1) {
+      sample += frames[index].frame.readInt16LE(offset) * volumes[index];
     }
-    const mixed = Math.max(-32_768, Math.min(32_767, Math.round(sample * master)));
+    const mixed = Math.max(-32_768, Math.min(32_767, Math.round(sample * mixGain)));
     output.writeInt16LE(mixed, offset);
   }
   return output;
@@ -148,8 +157,8 @@ export class PcmMixer extends Readable {
       if (available > 0) {
         input.buffer.copy(frame, 0, 0, available);
         input.buffer = input.buffer.subarray(available);
+        frames.push({ frame, volume: input.volume });
       }
-      frames.push({ frame, volume: input.volume });
       if (input.backpressured && input.buffer.length <= INPUT_LOW_WATERMARK_BYTES) {
         input.backpressured = false;
         input.onDrain();

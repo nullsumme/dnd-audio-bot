@@ -29,6 +29,8 @@ Soundboard MP3 ─┘          ▲
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
 encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
 a single-frame 20 ms Ogg page that is flushed immediately before passing it to `@discordjs/voice`.
+The mixer reserves proportional bus headroom whenever both lines overlap, preventing hard-clipped peaks
+without adding lookahead or buffering latency.
 Per-line PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
 old samples when its real-time clock runs slightly ahead of the mixer. A monotonic, deadline-based mixer
 clock compensates for delayed JavaScript timers instead of accumulating gaps in the outgoing stream.
@@ -92,7 +94,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.3.0 \
+  --version 0.3.1 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
