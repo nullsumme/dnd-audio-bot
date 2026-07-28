@@ -188,12 +188,15 @@ describe('AudioEngine source lifecycle', () => {
 
   it('drains a one-shot final partial frame before removing its source', async () => {
     vi.useFakeTimers();
+    // Discord starts the endless mixer before any library source, so consume the
+    // one-time output lead as silence before exercising source lifecycle timing.
+    engine.mixer.resume();
+    await vi.advanceTimersByTimeAsync(0);
     const effect = engine.playAsset(asset('Sword', 'soundboard'), '/data/sword.mp3', 'soundboard');
     const decoder = captured.decoders[0];
 
     decoder.callbacks.onPlaying();
     decoder.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME + 1_000));
-    engine.mixer.resume();
     decoder.callbacks.onEnd(null);
 
     expect(engine.list()).toMatchObject([{ id: effect.id, state: 'playing' }]);

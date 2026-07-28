@@ -21,10 +21,10 @@ one soundboard clip that plays without interrupting the background.
 ## How audio flows
 
 ```text
-Background MP3 ─┐
-                ├─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
-Soundboard MP3 ─┘          ▲
-                            └─ per-line + master gain
+Background MP3 ─► FFmpeg decoder ─┐
+                                  ├─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
+Soundboard MP3 ─► bounded PCM cache┘          ▲
+                                              └─ per-line + master gain
 ```
 
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
@@ -33,8 +33,9 @@ a single-frame 20 ms Ogg page that is flushed immediately before passing it to `
 The two mixer lines receive fixed bus headroom, preventing hard-clipped peaks without changing the
 background gain when a sound effect starts or ends and without adding lookahead latency.
 Per-line PCM queues use low-latency high/low-watermark backpressure, pausing their FFmpeg decoder without
-ever consuming a partial PCM frame. End-of-file tails are drained exactly once, and delayed event-loop
-timers discard stale queued audio instead of bursting old packets into Discord.
+ever consuming a partial PCM frame. End-of-file tails are drained exactly once. The mixer primes a bounded
+three-frame (60 ms) output lead and catches up at most three ordered frames after a delayed event-loop timer,
+protecting Discord from starvation without deleting PCM or allowing an unbounded latency queue.
 
 ## Discord setup
 
@@ -95,7 +96,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.4.3 \
+  --version 0.4.4 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
