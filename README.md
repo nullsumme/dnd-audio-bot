@@ -1,16 +1,18 @@
 # Soundkeep
 
-Soundkeep is a self-hosted Discord ambience mixer and soundboard for tabletop sessions. Its desktop-first
-SvelteKit dashboard lets a game master layer multiple YouTube videos and uploaded MP3 loops, then fire
-overlapping one-shot effects without interrupting the background mix.
+Soundkeep is a self-hosted Discord background-music controller and soundboard for tabletop sessions. Its
+desktop-first SvelteKit dashboard gives the game master two clear audio lines: one looping background and
+one soundboard clip that plays without interrupting the background.
 
 ## What it does
 
 - Connects to any voice channel visible to the bot from the web dashboard.
-- Mixes several YouTube and uploaded-MP3 ambience sources at the same time.
-- Loops every ambience source with independent volume controls.
-- Plays repeated and overlapping soundboard clips over the active ambience.
-- Uploads, previews, renames, categorizes, reassigns, searches, and deletes MP3 assets.
+- Selects one looping background track from the library.
+- Plays configured soundboard buttons over the uninterrupted background; a new button replaces the current
+  soundboard clip.
+- Stores live YouTube entries, downloaded YouTube MP3s, and uploaded MP3s in one managed library.
+- Uploads, downloads, previews, renames, categorizes, reassigns, searches, and deletes audio assets.
+- Adds and removes soundboard buttons without deleting their library assets.
 - Persists the audio library on one data volume.
 - Supports Discord's required DAVE voice encryption.
 - Ships as a non-root container and a production Helm chart.
@@ -18,18 +20,18 @@ overlapping one-shot effects without interrupting the background mix.
 ## How audio flows
 
 ```text
-YouTube URL ──► yt-dlp ──┐
-                         ├─► FFmpeg decoders ─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
-Uploaded MP3 ────────────┘           ▲
-                                     └─ per-source + master gain
+Background (live YouTube or local MP3) ─┐
+                                       ├─► 20 ms PCM mixer ─► FFmpeg/libopus ─► Discord voice
+Soundboard (live YouTube or local MP3) ─┘          ▲
+                                                   └─ per-line + master gain
 ```
 
-Each active source is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
+Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
 encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
 a 200 ms packet buffer before passing it to `@discordjs/voice`. YouTube media URLs are resolved through
 yt-dlp and looped directly by FFmpeg; if a signed URL eventually expires, Soundkeep resolves a fresh one
 automatically.
-Per-source PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
+Per-line PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
 old samples when its real-time clock runs slightly ahead of the mixer. A monotonic, deadline-based mixer
 clock compensates for delayed JavaScript timers instead of accumulating gaps in the outgoing stream.
 The production image uses yt-dlp's Python zipapp instead of its self-extracting binary, avoiding large
@@ -55,7 +57,8 @@ cp .env.example .env
 docker compose up --build -d
 ```
 
-Open <http://localhost:3000>. Uploaded files and their metadata live in the `soundkeep-data` volume.
+Open <http://localhost:3000>. Uploaded and downloaded files plus their metadata live in the
+`soundkeep-data` volume.
 
 Only `youtube.com` and `youtu.be` HTTPS URLs are accepted. Some age-restricted videos require a Netscape
 cookie file; set `YTDLP_COOKIES_FILE` to its mounted path when needed. Use only audio you are allowed to play
@@ -99,7 +102,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.1.7 \
+  --version 0.2.0 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -113,12 +116,11 @@ voice connection and one writable library volume.
 | Variable             |                    Default | Purpose                                                      |
 | -------------------- | -------------------------: | ------------------------------------------------------------ |
 | `DISCORD_BOT_TOKEN`  |                   required | Bot token from the Developer Portal                          |
-| `DATA_DIR`           |                   `./data` | Library index and uploaded MP3 directory                     |
+| `DATA_DIR`           |                   `./data` | Library index and uploaded/downloaded MP3 directory          |
 | `FFMPEG_PATH`        |                   `ffmpeg` | FFmpeg executable                                            |
 | `FFPROBE_PATH`       |                  `ffprobe` | FFprobe executable                                           |
 | `YTDLP_PATH`         |                   `yt-dlp` | yt-dlp executable                                            |
 | `YTDLP_COOKIES_FILE` |                      unset | Optional Netscape-format cookie file                         |
-| `MAX_ACTIVE_SOURCES` |                       `16` | Maximum simultaneous decoders                                |
 | `MAX_UPLOAD_BYTES`   |                `262144000` | MP3 upload limit                                             |
 | `ORIGIN`             | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
 

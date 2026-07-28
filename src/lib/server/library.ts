@@ -1,17 +1,18 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { promisify } from 'node:util';
-import type { AssetRole, AudioAsset } from '$lib/types';
+import type { AssetRole, AudioAsset, AudioAssetType } from '$lib/types';
 import { config } from './config';
+import { downloadYouTubeMp3, type YouTubeMetadata } from './youtube';
 
 const execFileAsync = promisify(execFile);
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 
 interface LibraryIndex {
   version: number;
-  assets: AudioAsset[];
+  assets: unknown[];
 }
 
 function isMp3(bytes: Uint8Array): boolean {
@@ -41,10 +42,12 @@ export class AudioLibrary {
     try {
       const raw = await readFile(this.indexPath, 'utf8');
       const parsed = JSON.parse(raw) as LibraryIndex;
-      if (parsed.version !== INDEX_VERSION || !Array.isArray(parsed.assets)) {
+      if (![1, INDEX_VERSION].includes(parsed.version) || !Array.isArray(parsed.assets)) {
         throw new Error('Unsupported library index version.');
       }
-      this.#assets = new Map(parsed.assets.map((asset) => [asset.id, asset]));
+      const assets = parsed.assets.map((asset) => this.#migrateAsset(asset, parsed.version));
+      this.#assets = new Map(assets.map((asset) => [asset.id, asset]));
+      if (parsed.version !== INDEX_VERSION) await this.#persist();
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') throw error;
@@ -65,6 +68,7 @@ export class AudioLibrary {
   }
 
   filePath(asset: AudioAsset): string {
+    if (!asset.filename) throw new Error('Live YouTube assets do not have a local file.');
     return join(this.audioDir, asset.filename);
   }
 
@@ -96,9 +100,11 @@ export class AudioLibrary {
       name: cleanText(input.name, basename(input.originalFilename, '.mp3'), 100),
       category: cleanText(input.category, input.role === 'soundboard' ? 'Effects' : 'Ambience', 40),
       role: input.role,
+      sourceType: 'mp3',
       filename,
       originalFilename: basename(input.originalFilename).slice(0, 180),
       mimeType: 'audio/mpeg',
+      youtubeUrl: null,
       size: input.bytes.byteLength,
       duration: await this.#probeDuration(target),
       createdAt: now,
@@ -112,6 +118,78 @@ export class AudioLibrary {
     } catch (error) {
       this.#assets.delete(id);
       await rm(target, { force: true });
+      throw error;
+    }
+  }
+
+  async addYouTube(input: {
+    metadata: YouTubeMetadata;
+    mode: 'live' | 'saved';
+    name: string;
+    category: string;
+    role: AssetRole;
+  }): Promise<AudioAsset> {
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const sourceType: AudioAssetType = input.mode === 'saved' ? 'youtube-saved' : 'youtube-live';
+    let filename: string | null = null;
+    let originalFilename: string | null = null;
+    let mimeType: 'audio/mpeg' | null = null;
+    let size = 0;
+    let duration = input.metadata.duration;
+
+    if (input.mode === 'saved') {
+      const temporaryDirectory = join(this.audioDir, `.${id}.downloading`);
+      const temporaryBase = join(temporaryDirectory, 'source');
+      const temporaryPath = `${temporaryBase}.mp3`;
+      const targetPath = join(this.audioDir, `${id}.mp3`);
+      try {
+        await mkdir(temporaryDirectory, { recursive: false });
+        await downloadYouTubeMp3(input.metadata.url, `${temporaryBase}.%(ext)s`);
+        const file = await stat(temporaryPath);
+        if (file.size <= 0) throw new Error('yt-dlp produced an empty MP3 file.');
+        if (file.size > config.maxUploadBytes) {
+          throw new Error(
+            `The saved audio exceeds the ${Math.round(config.maxUploadBytes / 1024 / 1024)} MB limit.`
+          );
+        }
+        await rename(temporaryPath, targetPath);
+        filename = `${id}.mp3`;
+        originalFilename = `${cleanText(input.metadata.title, 'YouTube audio', 150)}.mp3`;
+        mimeType = 'audio/mpeg';
+        size = file.size;
+        duration = (await this.#probeDuration(targetPath)) ?? duration;
+      } catch (error) {
+        await rm(targetPath, { force: true });
+        throw error;
+      } finally {
+        await rm(temporaryDirectory, { recursive: true, force: true });
+      }
+    }
+
+    const asset: AudioAsset = {
+      id,
+      name: cleanText(input.name, input.metadata.title, 100),
+      category: cleanText(input.category, input.role === 'soundboard' ? 'Effects' : 'Ambience', 40),
+      role: input.role,
+      sourceType,
+      filename,
+      originalFilename,
+      mimeType,
+      youtubeUrl: input.metadata.url,
+      size,
+      duration,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    this.#assets.set(id, asset);
+    try {
+      await this.#persist();
+      return asset;
+    } catch (error) {
+      this.#assets.delete(id);
+      if (filename) await rm(join(this.audioDir, filename), { force: true });
       throw error;
     }
   }
@@ -140,19 +218,61 @@ export class AudioLibrary {
   async delete(id: string): Promise<AudioAsset> {
     const asset = this.#assets.get(id);
     if (!asset) throw new Error('Audio asset not found.');
-    const originalPath = this.filePath(asset);
-    const deletingPath = `${originalPath}.deleting`;
-    await rename(originalPath, deletingPath);
+    const originalPath = asset.filename ? this.filePath(asset) : null;
+    const deletingPath = originalPath ? `${originalPath}.deleting` : null;
+    if (originalPath && deletingPath) await rename(originalPath, deletingPath);
     this.#assets.delete(id);
     try {
       await this.#persist();
-      await rm(deletingPath, { force: true });
+      if (deletingPath) await rm(deletingPath, { force: true });
       return asset;
     } catch (error) {
       this.#assets.set(id, asset);
-      await rename(deletingPath, originalPath).catch(() => undefined);
+      if (deletingPath && originalPath) {
+        await rename(deletingPath, originalPath).catch(() => undefined);
+      }
       throw error;
     }
+  }
+
+  #migrateAsset(value: unknown, version: number): AudioAsset {
+    if (!value || typeof value !== 'object') throw new Error('Invalid audio library entry.');
+    const record = value as Record<string, unknown>;
+    const role = record.role === 'ambience' ? 'ambience' : 'soundboard';
+    const sourceType =
+      version === 1
+        ? 'mp3'
+        : record.sourceType === 'youtube-live' ||
+            record.sourceType === 'youtube-saved' ||
+            record.sourceType === 'mp3'
+          ? record.sourceType
+          : null;
+    if (!sourceType || typeof record.id !== 'string' || typeof record.name !== 'string') {
+      throw new Error('Invalid audio library entry.');
+    }
+
+    const filename = typeof record.filename === 'string' ? record.filename : null;
+    if (sourceType !== 'youtube-live' && !filename) {
+      throw new Error('A saved audio library entry is missing its file.');
+    }
+
+    return {
+      id: record.id,
+      name: record.name,
+      category: typeof record.category === 'string' ? record.category : 'Uncategorized',
+      role,
+      sourceType,
+      filename,
+      originalFilename:
+        typeof record.originalFilename === 'string' ? record.originalFilename : null,
+      mimeType: sourceType === 'youtube-live' ? null : 'audio/mpeg',
+      youtubeUrl: typeof record.youtubeUrl === 'string' ? record.youtubeUrl : null,
+      size: typeof record.size === 'number' && record.size >= 0 ? record.size : 0,
+      duration:
+        typeof record.duration === 'number' && record.duration >= 0 ? record.duration : null,
+      createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date().toISOString(),
+      updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : new Date().toISOString()
+    };
   }
 
   async #probeDuration(path: string): Promise<number | null> {

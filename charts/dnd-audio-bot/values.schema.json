@@ -18,7 +18,6 @@
     "audio": {
       "type": "object",
       "properties": {
-        "maxActiveSources": { "type": "integer", "minimum": 1, "maximum": 64 },
         "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" }
       }
     },

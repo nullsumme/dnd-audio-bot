@@ -18,7 +18,7 @@ export async function POST({ params, request }: { params: { id: string }; reques
     const role = input.role ?? asset.role;
     const source = runtime.engine.playAsset(
       asset,
-      runtime.library.filePath(asset),
+      asset.filename ? runtime.library.filePath(asset) : null,
       role,
       input.volume
     );

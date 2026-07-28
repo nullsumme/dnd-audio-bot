@@ -1,4 +1,5 @@
 export type AssetRole = 'ambience' | 'soundboard';
+export type AudioAssetType = 'youtube-live' | 'youtube-saved' | 'mp3';
 export type SourceOrigin = 'youtube' | 'library';
 export type SourceState = 'starting' | 'playing' | 'restarting' | 'failed';
 
@@ -7,9 +8,11 @@ export interface AudioAsset {
   name: string;
   category: string;
   role: AssetRole;
-  filename: string;
-  originalFilename: string;
-  mimeType: 'audio/mpeg';
+  sourceType: AudioAssetType;
+  filename: string | null;
+  originalFilename: string | null;
+  mimeType: 'audio/mpeg' | null;
+  youtubeUrl: string | null;
   size: number;
   duration: number | null;
   createdAt: string;

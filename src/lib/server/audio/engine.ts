@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import type { ActiveSource, AssetRole, AudioAsset } from '$lib/types';
-import { config } from '../config';
 import { spawnDecoder, type DecoderHandle, type DecoderInput } from './decoder';
 import { PcmMixer } from './mixer';
 
@@ -36,27 +35,26 @@ export class AudioEngine {
     return this.mixer.masterVolume;
   }
 
-  playAsset(asset: AudioAsset, path: string, role: AssetRole, volume = 0.7): ActiveSource {
+  playAsset(asset: AudioAsset, path: string | null, role: AssetRole, volume = 0.7): ActiveSource {
+    const shouldLoop = role === 'ambience';
+    if (asset.sourceType === 'youtube-live' && !asset.youtubeUrl) {
+      throw new Error('This live YouTube asset is missing its URL.');
+    }
+    if (asset.sourceType !== 'youtube-live' && !path) {
+      throw new Error('This saved audio asset is missing its local file.');
+    }
     return this.#start({
       label: asset.name,
-      input: { kind: 'file', path, loop: role === 'ambience' },
-      origin: 'library',
+      input:
+        asset.sourceType === 'youtube-live'
+          ? { kind: 'youtube', url: asset.youtubeUrl!, loop: shouldLoop }
+          : { kind: 'file', path: path!, loop: shouldLoop },
+      origin: asset.sourceType === 'youtube-live' ? 'youtube' : 'library',
       role,
       volume,
-      shouldLoop: role === 'ambience',
-      assetId: asset.id
-    });
-  }
-
-  playYouTube(input: { url: string; title: string; volume?: number }): ActiveSource {
-    return this.#start({
-      label: input.title,
-      input: { kind: 'youtube', url: input.url },
-      origin: 'youtube',
-      role: 'ambience',
-      volume: input.volume ?? 0.65,
-      shouldLoop: true,
-      url: input.url
+      shouldLoop,
+      assetId: asset.id,
+      url: asset.youtubeUrl ?? undefined
     });
   }
 
@@ -110,9 +108,9 @@ export class AudioEngine {
     assetId?: string;
     url?: string;
   }): ActiveSource {
-    if (this.#sources.size >= config.maxActiveSources) {
-      throw new Error(`The ${config.maxActiveSources}-source limit has been reached.`);
-    }
+    // Soundkeep deliberately exposes exactly two mix lines. Starting a source replaces
+    // the current source on that line without disturbing playback on the other line.
+    this.stopScope(input.role);
     const id = randomUUID();
     const source: RuntimeSource = {
       public: {

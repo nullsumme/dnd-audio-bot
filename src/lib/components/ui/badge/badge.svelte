@@ -17,8 +17,8 @@
     default: 'border-transparent bg-primary/15 text-primary',
     secondary: 'border-transparent bg-secondary text-secondary-foreground',
     outline: 'border-border text-muted-foreground',
-    success: 'border-emerald-400/15 bg-emerald-400/10 text-emerald-300',
-    warning: 'border-amber-400/15 bg-amber-400/10 text-amber-300'
+    success: 'border-transparent bg-primary/15 text-primary',
+    warning: 'border-transparent bg-secondary text-secondary-foreground'
   };
 </script>
 
