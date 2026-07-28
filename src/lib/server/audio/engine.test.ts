@@ -9,7 +9,8 @@ interface CapturedDecoder {
     onEnd(error: string | null): void;
   };
   resumed: number;
-  stopped: boolean;
+  stopRequested: boolean;
+  finishStop(): void;
 }
 
 const captured = vi.hoisted(() => ({
@@ -20,21 +21,32 @@ vi.mock('./decoder', () => ({
   spawnDecoder: (
     input: CapturedDecoder['input'],
     callbacks: CapturedDecoder['callbacks']
-  ): { resume(): void; stop(): void } => {
-    const decoder: CapturedDecoder = { input, callbacks, resumed: 0, stopped: false };
+  ): { resume(): void; stop(): Promise<void> } => {
+    let resolveStop: () => void = () => {};
+    const stopped = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
+    const decoder: CapturedDecoder = {
+      input,
+      callbacks,
+      resumed: 0,
+      stopRequested: false,
+      finishStop: resolveStop
+    };
     captured.decoders.push(decoder);
     return {
       resume() {
         decoder.resumed += 1;
       },
-      stop() {
-        decoder.stopped = true;
+      async stop() {
+        decoder.stopRequested = true;
+        await stopped;
       }
     };
   }
 }));
 
-import { AudioEngine } from './engine';
+import { AMBIENCE_RETRY_DELAY_MILLISECONDS, AudioEngine, MAX_AMBIENCE_RESTARTS } from './engine';
 import { BYTES_PER_FRAME, INPUT_HIGH_WATERMARK_BYTES } from './mixer';
 
 function asset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
@@ -62,20 +74,17 @@ describe('AudioEngine source lifecycle', () => {
     engine = new AudioEngine();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     engine.destroy();
+    captured.decoders.forEach((decoder) => decoder.finishStop());
+    await Promise.resolve();
     vi.useRealTimers();
   });
 
-  it('keeps exactly one source on each mix line and replaces only that line', () => {
+  it('keeps exactly one source on each mix line and waits for the replaced decoder to exit', async () => {
     const rain = engine.playAsset(asset('Rain', 'ambience'), '/data/rain.mp3', 'ambience');
     const tavern = engine.playAsset(asset('Tavern', 'ambience'), '/data/tavern.mp3', 'ambience');
-    const thunderOne = engine.playAsset(
-      asset('Thunder', 'soundboard'),
-      '/data/thunder.mp3',
-      'soundboard'
-    );
-    const thunderTwo = engine.playAsset(
+    const thunder = engine.playAsset(
       asset('Thunder', 'soundboard'),
       '/data/thunder.mp3',
       'soundboard'
@@ -84,48 +93,82 @@ describe('AudioEngine source lifecycle', () => {
     expect(engine.list()).toHaveLength(2);
     expect(engine.list().filter((source) => source.role === 'ambience')).toHaveLength(1);
     expect(engine.list().filter((source) => source.role === 'soundboard')).toHaveLength(1);
-    expect(thunderOne.id).not.toBe(thunderTwo.id);
     expect(engine.list().some((source) => source.id === rain.id)).toBe(false);
-    expect(engine.list().some((source) => source.id === thunderOne.id)).toBe(false);
-    expect(captured.decoders[0].stopped).toBe(true);
-    expect(captured.decoders[2].stopped).toBe(true);
-    expect(captured.decoders.map((decoder) => decoder.input)).toEqual([
-      { path: '/data/rain.mp3', loop: true },
-      { path: '/data/tavern.mp3', loop: true },
-      { path: '/data/thunder.mp3', loop: false },
-      { path: '/data/thunder.mp3', loop: false }
-    ]);
+    expect(captured.decoders).toHaveLength(2);
+    expect(captured.decoders[0].stopRequested).toBe(true);
+    expect(captured.decoders[1].input).toEqual({ path: '/data/thunder.mp3', loop: false });
 
-    captured.decoders[3].callbacks.onEnd(null);
+    captured.decoders[0].finishStop();
+    await vi.waitFor(() => expect(captured.decoders).toHaveLength(3));
+    expect(captured.decoders[2].input).toEqual({ path: '/data/tavern.mp3', loop: true });
+
+    captured.decoders[1].callbacks.onEnd(null);
     expect(engine.list()).toMatchObject([{ id: tavern.id, role: 'ambience' }]);
+    expect(engine.list().some((source) => source.id === thunder.id)).toBe(false);
   });
 
-  it('restarts ambience after EOF while one-shots remove themselves', async () => {
+  it('coalesces rapid same-role replacements before starting another FFmpeg process', async () => {
+    const first = engine.playAsset(asset('First', 'soundboard'), '/data/first.mp3', 'soundboard');
+    const second = engine.playAsset(
+      asset('Second', 'soundboard'),
+      '/data/second.mp3',
+      'soundboard'
+    );
+    const third = engine.playAsset(asset('Third', 'soundboard'), '/data/third.mp3', 'soundboard');
+
+    expect(first.id).not.toBe(second.id);
+    expect(second.id).not.toBe(third.id);
+    expect(captured.decoders).toHaveLength(1);
+    expect(captured.decoders[0].stopRequested).toBe(true);
+
+    captured.decoders[0].finishStop();
+    await vi.waitFor(() => expect(captured.decoders).toHaveLength(2));
+    expect(captured.decoders[1].input.path).toBe('/data/third.mp3');
+    expect(engine.list()).toMatchObject([{ id: third.id }]);
+  });
+
+  it('drains a one-shot final partial frame before removing its source', async () => {
+    vi.useFakeTimers();
+    const effect = engine.playAsset(asset('Sword', 'soundboard'), '/data/sword.mp3', 'soundboard');
+    const decoder = captured.decoders[0];
+
+    decoder.callbacks.onPlaying();
+    decoder.callbacks.onData(Buffer.alloc(BYTES_PER_FRAME + 1_000));
+    engine.mixer.resume();
+    decoder.callbacks.onEnd(null);
+
+    expect(engine.list()).toMatchObject([{ id: effect.id, state: 'playing' }]);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(engine.list()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(engine.list()).toEqual([]);
+    expect(engine.mixer.diagnostics.finalPartialFramesPadded).toBe(1);
+  });
+
+  it('opens the ambience circuit after bounded decoder failures', async () => {
     vi.useFakeTimers();
     const ambience = engine.playAsset(asset('Forest', 'ambience'), '/data/forest.mp3', 'ambience');
-    const effect = engine.playAsset(asset('Sword', 'soundboard'), '/data/sword.mp3', 'soundboard');
 
-    captured.decoders[0].callbacks.onPlaying();
-    captured.decoders[1].callbacks.onPlaying();
-    expect(engine.list().find((source) => source.id === ambience.id)?.state).toBe('playing');
+    for (let attempt = 0; attempt < MAX_AMBIENCE_RESTARTS; attempt += 1) {
+      captured.decoders[attempt].callbacks.onEnd('invalid MP3');
+      expect(engine.list()).toMatchObject([{ id: ambience.id, state: 'restarting' }]);
+      await vi.advanceTimersByTimeAsync(AMBIENCE_RETRY_DELAY_MILLISECONDS);
+      expect(captured.decoders).toHaveLength(attempt + 2);
+      expect(captured.decoders.at(-1)?.input).toEqual({
+        path: '/data/forest.mp3',
+        loop: true
+      });
+    }
 
-    captured.decoders[0].callbacks.onEnd(null);
-    captured.decoders[1].callbacks.onEnd(null);
-    expect(engine.list()).toMatchObject([{ id: ambience.id, state: 'restarting' }]);
-
-    await vi.advanceTimersByTimeAsync(500);
-    expect(captured.decoders).toHaveLength(3);
-    expect(captured.decoders[2].input).toEqual({
-      path: '/data/forest.mp3',
-      loop: true
-    });
-    expect(engine.list()).toMatchObject([{ id: ambience.id, state: 'restarting' }]);
-    captured.decoders[2].callbacks.onPlaying();
-    expect(engine.list()).toMatchObject([{ id: ambience.id, state: 'playing' }]);
-    expect(engine.list().some((source) => source.id === effect.id)).toBe(false);
+    captured.decoders.at(-1)!.callbacks.onEnd('invalid MP3');
+    expect(engine.list()).toMatchObject([
+      { id: ambience.id, state: 'failed', error: 'invalid MP3' }
+    ]);
+    await vi.advanceTimersByTimeAsync(AMBIENCE_RETRY_DELAY_MILLISECONDS * 10);
+    expect(captured.decoders).toHaveLength(MAX_AMBIENCE_RESTARTS + 1);
   });
 
-  it('stops all sources associated with a deleted library asset', () => {
+  it('stops all sources associated with a deleted library asset', async () => {
     const shared = asset('Storm', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
@@ -133,7 +176,11 @@ describe('AudioEngine source lifecycle', () => {
 
     expect(engine.stopByAsset(shared.id)).toBe(1);
     expect(engine.list()).toMatchObject([{ label: 'Rain' }]);
-    expect(captured.decoders.slice(0, 2).every((decoder) => decoder.stopped)).toBe(true);
+    expect(captured.decoders[0].stopRequested).toBe(true);
+    expect(captured.decoders[1].stopRequested).toBe(false);
+    captured.decoders[0].finishStop();
+    await Promise.resolve();
+    expect(captured.decoders).toHaveLength(2);
   });
 
   it('backpressures a decoder without dropping buffered PCM and resumes after draining', async () => {

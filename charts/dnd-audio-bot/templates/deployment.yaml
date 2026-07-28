@@ -46,6 +46,9 @@ spec:
             - { name: DATA_DIR, value: /data }
             - { name: BODY_SIZE_LIMIT, value: 256M }
             - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
+            - { name: MAX_LIBRARY_BYTES, value: {{ .Values.audio.maxLibraryBytes | quote }} }
+            - { name: MIN_FREE_BYTES, value: {{ .Values.audio.minFreeBytes | quote }} }
+            - { name: MAX_CONCURRENT_UPLOADS, value: {{ .Values.audio.maxConcurrentUploads | quote }} }
             - { name: XDG_CACHE_HOME, value: /data/.cache }
           ports:
             - name: http

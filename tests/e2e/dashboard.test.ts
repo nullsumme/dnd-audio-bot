@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { validTestMp3 } from '../fixtures/audio';
 
 test('supports the desktop dashboard navigation and audio workflow', async ({ page }) => {
   await page.goto('/');
@@ -31,7 +32,7 @@ test('supports the desktop dashboard navigation and audio workflow', async ({ pa
   await page.locator('#audio-upload').setInputFiles({
     name: 'thunder.mp3',
     mimeType: 'audio/mpeg',
-    buffer: Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00])
+    buffer: Buffer.from(validTestMp3())
   });
   await page.locator('#upload-name').fill('Distant thunder');
   await page.locator('#upload-category').fill('Weather');

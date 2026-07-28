@@ -10,7 +10,8 @@ one soundboard clip that plays without interrupting the background.
 - Selects one looping background track from the library.
 - Plays configured soundboard buttons over the uninterrupted background; a new button replaces the current
   soundboard clip.
-- Stores uploaded MP3s in one managed local library.
+- Streams uploaded MP3s into one managed local library, validates them with FFprobe and a full FFmpeg
+  decode, then commits the file and index atomically.
 - Uploads, previews, renames, categorizes, reassigns, searches, and deletes audio assets.
 - Adds and removes soundboard buttons without deleting their library assets.
 - Persists the audio library on one data volume.
@@ -29,11 +30,11 @@ Soundboard MP3 ─┘          ▲
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
 encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
 a single-frame 20 ms Ogg page that is flushed immediately before passing it to `@discordjs/voice`.
-The mixer reserves proportional bus headroom whenever both lines overlap, preventing hard-clipped peaks
-without adding lookahead or buffering latency.
-Per-line PCM queues use high/low-watermark backpressure, pausing their FFmpeg decoder instead of dropping
-old samples when its real-time clock runs slightly ahead of the mixer. A monotonic, deadline-based mixer
-clock compensates for delayed JavaScript timers instead of accumulating gaps in the outgoing stream.
+The two mixer lines receive fixed bus headroom, preventing hard-clipped peaks without changing the
+background gain when a sound effect starts or ends and without adding lookahead latency.
+Per-line PCM queues use low-latency high/low-watermark backpressure, pausing their FFmpeg decoder without
+ever consuming a partial PCM frame. End-of-file tails are drained exactly once, and delayed event-loop
+timers discard stale queued audio instead of bursting old packets into Discord.
 
 ## Discord setup
 
@@ -94,7 +95,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.3.1 \
+  --version 0.4.0 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -105,14 +106,17 @@ voice connection and one writable library volume.
 
 ## Configuration
 
-| Variable            |                    Default | Purpose                                                      |
-| ------------------- | -------------------------: | ------------------------------------------------------------ |
-| `DISCORD_BOT_TOKEN` |                   required | Bot token from the Developer Portal                          |
-| `DATA_DIR`          |                   `./data` | Library index and uploaded MP3 directory                     |
-| `FFMPEG_PATH`       |                   `ffmpeg` | FFmpeg executable                                            |
-| `FFPROBE_PATH`      |                  `ffprobe` | FFprobe executable                                           |
-| `MAX_UPLOAD_BYTES`  |                `262144000` | MP3 upload limit                                             |
-| `ORIGIN`            | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
+| Variable                 |                    Default | Purpose                                                      |
+| ------------------------ | -------------------------: | ------------------------------------------------------------ |
+| `DISCORD_BOT_TOKEN`      |                   required | Bot token from the Developer Portal                          |
+| `DATA_DIR`               |                   `./data` | Library index and uploaded MP3 directory                     |
+| `FFMPEG_PATH`            |                   `ffmpeg` | FFmpeg executable                                            |
+| `FFPROBE_PATH`           |                  `ffprobe` | FFprobe executable                                           |
+| `MAX_UPLOAD_BYTES`       |                `262144000` | Per-file MP3 upload limit                                    |
+| `MAX_LIBRARY_BYTES`      |               `8589934592` | Total managed-library quota                                  |
+| `MIN_FREE_BYTES`         |                `268435456` | Free-space reserve maintained on the data volume             |
+| `MAX_CONCURRENT_UPLOADS` |                        `1` | Concurrent streamed upload/validation jobs                   |
+| `ORIGIN`                 | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
 
 The application itself does not provide user accounts. Put it behind an authenticated reverse proxy when it
 is reachable by anyone other than trusted game masters.

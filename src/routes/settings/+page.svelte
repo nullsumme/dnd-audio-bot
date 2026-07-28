@@ -256,6 +256,30 @@
           {soundkeep.state.discord.audioDiagnostics.missedFrames}
         </p>
       </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Deferred partial frames</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.discord.audioDiagnostics.partialFramesDeferred}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">EOF frames padded</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.discord.audioDiagnostics.finalPartialFramesPadded}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Stale frames dropped</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.discord.audioDiagnostics.staleFramesDropped}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Discord filler frames</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.discord.audioDiagnostics.fillerFrames}
+        </p>
+      </div>
     </Card.Content>
   </Card.Root>
 </div>

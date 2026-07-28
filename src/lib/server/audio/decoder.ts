@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { config } from '../config';
 import { terminateProcess } from '../process';
+import { BYTES_PER_FRAME } from './mixer';
 
 export interface DecoderInput {
   path: string;
@@ -15,7 +16,7 @@ export interface DecoderCallbacks {
 
 export interface DecoderHandle {
   resume(): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 function boundedLog(current: string, chunk: Buffer): string {
@@ -26,6 +27,16 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
   let stopped = false;
   let ffmpeg: ChildProcessWithoutNullStreams | null = null;
   let stderr = '';
+  let backpressured = false;
+  let stdoutEnded = false;
+  let stdoutClosed = false;
+  let processClosed = false;
+  let closeCode: number | null = null;
+  let endAnnounced = false;
+  let resolveClosed: () => void = () => {};
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
 
   const process: ChildProcessWithoutNullStreams = spawn(
     config.ffmpegPath,
@@ -34,7 +45,6 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
       '-loglevel',
       'warning',
       ...(input.loop ? ['-stream_loop', '-1'] : []),
-      '-re',
       '-i',
       input.path,
       '-map',
@@ -56,12 +66,40 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
   process.stdin.end();
 
   let announcedPlaying = false;
-  process.stdout.on('data', (chunk: Buffer) => {
+  const deliver = (chunk: Buffer): boolean => {
     if (!announcedPlaying) {
       announcedPlaying = true;
       callbacks.onPlaying();
     }
-    if (!callbacks.onData(chunk)) process.stdout.pause();
+    return callbacks.onData(chunk);
+  };
+  const announceEnd = () => {
+    if (stopped || endAnnounced || !processClosed || !stdoutEnded) return;
+    endAnnounced = true;
+    const message =
+      closeCode === 0
+        ? null
+        : stderr.trim() || `FFmpeg exited with code ${closeCode ?? 'unknown'}.`;
+    callbacks.onEnd(message);
+  };
+  const pump = () => {
+    while (!backpressured) {
+      const chunk = process.stdout.read(BYTES_PER_FRAME) as Buffer | null;
+      if (chunk === null) break;
+      if (!deliver(chunk)) backpressured = true;
+    }
+    if (stdoutClosed && process.stdout.readableLength === 0) stdoutEnded = true;
+    announceEnd();
+  };
+
+  process.stdout.on('readable', pump);
+  process.stdout.once('end', () => {
+    stdoutEnded = true;
+    announceEnd();
+  });
+  process.stdout.once('close', () => {
+    stdoutClosed = true;
+    pump();
   });
   process.stderr.on('data', (chunk: Buffer) => {
     stderr = boundedLog(stderr, chunk);
@@ -71,20 +109,23 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
   });
   process.once('close', (code) => {
     if (ffmpeg === process) ffmpeg = null;
-    if (stopped) return;
-    const message =
-      code === 0 ? null : stderr.trim() || `FFmpeg exited with code ${code ?? 'unknown'}.`;
-    callbacks.onEnd(message);
+    processClosed = true;
+    closeCode = code;
+    resolveClosed();
+    announceEnd();
   });
 
   return {
     resume() {
-      ffmpeg?.stdout.resume();
+      if (!backpressured) return;
+      backpressured = false;
+      pump();
     },
-    stop() {
-      if (stopped) return;
+    async stop() {
+      if (stopped) return closed;
       stopped = true;
       terminateProcess(ffmpeg);
+      await closed;
     }
   };
 }

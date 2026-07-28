@@ -12,14 +12,15 @@ interface FakeChild extends EventEmitter {
 }
 
 const fakes = vi.hoisted(() => ({
-  children: [] as FakeChild[]
+  children: [] as FakeChild[],
+  args: [] as string[][]
 }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
-    spawn: vi.fn(() => {
+    spawn: vi.fn((_command: string, args: string[]) => {
       const child = new EventEmitter() as FakeChild;
       child.stdin = new PassThrough();
       child.stdout = new PassThrough();
@@ -31,6 +32,7 @@ vi.mock('node:child_process', async (importOriginal) => {
         return true;
       });
       fakes.children.push(child);
+      fakes.args.push(args);
       return child;
     })
   };
@@ -42,9 +44,24 @@ describe('spawnDecoder local MP3 playback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fakes.children.length = 0;
+    fakes.args.length = 0;
   });
 
-  it('pauses FFmpeg output on mixer backpressure and resumes on demand', () => {
+  it('uses stream looping without FFmpeg wall-clock throttling', () => {
+    spawnDecoder(
+      { path: '/data/forest.mp3', loop: true },
+      {
+        onData: () => true,
+        onPlaying() {},
+        onEnd() {}
+      }
+    );
+
+    expect(fakes.args[0]).toContain('-stream_loop');
+    expect(fakes.args[0]).not.toContain('-re');
+  });
+
+  it('reads complete PCM frames on demand and resumes after mixer backpressure', async () => {
     const callbacks = {
       onData: vi.fn(() => false),
       onPlaying: vi.fn(),
@@ -53,10 +70,35 @@ describe('spawnDecoder local MP3 playback', () => {
     const decoder = spawnDecoder({ path: '/data/forest.mp3', loop: true }, callbacks);
     const [ffmpeg] = fakes.children;
 
-    ffmpeg.stdout.emit('data', Buffer.alloc(4_096));
-    expect(ffmpeg.stdout.isPaused()).toBe(true);
+    ffmpeg.stdout.write(Buffer.alloc(3_840 * 2));
+    await vi.waitFor(() => expect(callbacks.onData).toHaveBeenCalledTimes(1));
+    expect(callbacks.onData).toHaveBeenLastCalledWith(Buffer.alloc(3_840));
+
+    callbacks.onData.mockReturnValue(true);
+    decoder.resume();
+    await vi.waitFor(() => expect(callbacks.onData).toHaveBeenCalledTimes(2));
+  });
+
+  it('waits for paused stdout and its final partial frame before announcing EOF', async () => {
+    const callbacks = {
+      onData: vi.fn().mockReturnValueOnce(false).mockReturnValue(true),
+      onPlaying: vi.fn(),
+      onEnd: vi.fn()
+    };
+    const decoder = spawnDecoder({ path: '/data/toy.mp3', loop: false }, callbacks);
+    const [ffmpeg] = fakes.children;
+    const tail = Buffer.alloc(1_234, 7);
+
+    ffmpeg.stdout.end(Buffer.concat([Buffer.alloc(3_840, 3), Buffer.alloc(3_840, 5), tail]));
+    await vi.waitFor(() => expect(callbacks.onData).toHaveBeenCalledTimes(1));
+    ffmpeg.emit('close', 0);
+    expect(callbacks.onEnd).not.toHaveBeenCalled();
 
     decoder.resume();
-    expect(ffmpeg.stdout.isPaused()).toBe(false);
+    await vi.waitFor(() => expect(callbacks.onEnd).toHaveBeenCalledWith(null));
+    expect(callbacks.onData).toHaveBeenCalledTimes(3);
+    expect(callbacks.onData.mock.calls.map(([chunk]) => chunk.length)).toEqual([
+      3_840, 3_840, 1_234
+    ]);
   });
 });

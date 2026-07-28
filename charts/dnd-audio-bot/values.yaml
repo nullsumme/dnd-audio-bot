@@ -15,6 +15,9 @@ discord:
 
 audio:
   maxUploadBytes: '262144000'
+  maxLibraryBytes: '8589934592'
+  minFreeBytes: '268435456'
+  maxConcurrentUploads: 1
 
 service:
   type: ClusterIP

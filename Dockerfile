@@ -33,6 +33,10 @@ ENV NODE_ENV=production \
     PROTOCOL_HEADER=x-forwarded-proto \
     HOST_HEADER=x-forwarded-host \
     DATA_DIR=/data \
+    MAX_UPLOAD_BYTES=262144000 \
+    MAX_LIBRARY_BYTES=8589934592 \
+    MIN_FREE_BYTES=268435456 \
+    MAX_CONCURRENT_UPLOADS=1 \
     XDG_CACHE_HOME=/data/.cache
 
 USER 10001:10001
