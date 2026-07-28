@@ -12,7 +12,5 @@ export const config = {
   dataDir: resolve(process.env.DATA_DIR?.trim() || './data'),
   ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
   ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
-  ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
-  ytdlpCookiesFile: process.env.YTDLP_COOKIES_FILE?.trim() || null,
   maxUploadBytes: positiveInteger('MAX_UPLOAD_BYTES', 250 * 1024 * 1024)
 } as const;

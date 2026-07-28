@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    Activity,
     Bot,
     CheckCircle2,
     CircleX,
@@ -212,10 +211,10 @@
           <Card.Description>External tools available in this deployment.</Card.Description>
         </Card.Header>
         <Card.Content class="flex flex-col gap-4">
-          {#each [['FFmpeg', soundkeep.state.capabilities.ffmpeg], ['FFprobe', soundkeep.state.capabilities.ffprobe], ['yt-dlp', soundkeep.state.capabilities.ytdlp]] as [label, available] (label)}
+          {#each [['FFmpeg', soundkeep.state.capabilities.ffmpeg], ['FFprobe', soundkeep.state.capabilities.ffprobe]] as [label, available] (label)}
             <div class="flex items-center justify-between gap-3">
               <span class="flex items-center gap-2 text-sm">
-                {#if label === 'yt-dlp'}<Activity />{:else}<Cpu />{/if}
+                <Cpu />
                 {label}
               </span>
               <Badge variant={available ? 'success' : 'warning'}>
@@ -246,9 +245,9 @@
         </p>
       </div>
       <div>
-        <p class="text-muted-foreground text-xs">Audio buffer</p>
+        <p class="text-muted-foreground text-xs">Packetization delay</p>
         <p class="mt-1 font-medium">
-          {soundkeep.state.discord.audioDiagnostics.bufferMilliseconds} ms
+          {soundkeep.state.discord.audioDiagnostics.packetizationMilliseconds} ms
         </p>
       </div>
       <div>

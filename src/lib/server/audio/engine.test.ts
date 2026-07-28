@@ -2,8 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioAsset } from '$lib/types';
 
 interface CapturedDecoder {
-  input:
-    { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string; loop: boolean };
+  input: { path: string; loop: boolean };
   callbacks: {
     onData(chunk: Buffer): boolean;
     onPlaying(): void;
@@ -45,27 +44,13 @@ function asset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
     name: id,
     category: role === 'ambience' ? 'Weather' : 'Effects',
     role,
-    sourceType: 'mp3',
     filename: `${id}.mp3`,
     originalFilename: `${id}.mp3`,
     mimeType: 'audio/mpeg',
-    youtubeUrl: null,
     size: 1_024,
     duration: 10,
     createdAt: timestamp,
     updatedAt: timestamp
-  };
-}
-
-function liveAsset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
-  return {
-    ...asset(id, role),
-    sourceType: 'youtube-live',
-    filename: null,
-    originalFilename: null,
-    mimeType: null,
-    youtubeUrl: `https://youtu.be/${id.toLowerCase()}`,
-    size: 0
   };
 }
 
@@ -84,7 +69,7 @@ describe('AudioEngine source lifecycle', () => {
 
   it('keeps exactly one source on each mix line and replaces only that line', () => {
     const rain = engine.playAsset(asset('Rain', 'ambience'), '/data/rain.mp3', 'ambience');
-    const tavern = engine.playAsset(liveAsset('Tavern', 'ambience'), null, 'ambience');
+    const tavern = engine.playAsset(asset('Tavern', 'ambience'), '/data/tavern.mp3', 'ambience');
     const thunderOne = engine.playAsset(
       asset('Thunder', 'soundboard'),
       '/data/thunder.mp3',
@@ -105,10 +90,10 @@ describe('AudioEngine source lifecycle', () => {
     expect(captured.decoders[0].stopped).toBe(true);
     expect(captured.decoders[2].stopped).toBe(true);
     expect(captured.decoders.map((decoder) => decoder.input)).toEqual([
-      { kind: 'file', path: '/data/rain.mp3', loop: true },
-      { kind: 'youtube', url: 'https://youtu.be/tavern', loop: true },
-      { kind: 'file', path: '/data/thunder.mp3', loop: false },
-      { kind: 'file', path: '/data/thunder.mp3', loop: false }
+      { path: '/data/rain.mp3', loop: true },
+      { path: '/data/tavern.mp3', loop: true },
+      { path: '/data/thunder.mp3', loop: false },
+      { path: '/data/thunder.mp3', loop: false }
     ]);
 
     captured.decoders[3].callbacks.onEnd(null);
@@ -131,7 +116,6 @@ describe('AudioEngine source lifecycle', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(captured.decoders).toHaveLength(3);
     expect(captured.decoders[2].input).toEqual({
-      kind: 'file',
       path: '/data/forest.mp3',
       loop: true
     });
@@ -145,10 +129,10 @@ describe('AudioEngine source lifecycle', () => {
     const shared = asset('Storm', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
-    engine.playAsset(liveAsset('Rain', 'ambience'), null, 'ambience');
+    engine.playAsset(asset('Rain', 'ambience'), '/data/rain.mp3', 'ambience');
 
     expect(engine.stopByAsset(shared.id)).toBe(1);
-    expect(engine.list()).toMatchObject([{ origin: 'youtube', label: 'Rain' }]);
+    expect(engine.list()).toMatchObject([{ label: 'Rain' }]);
     expect(captured.decoders.slice(0, 2).every((decoder) => decoder.stopped)).toBe(true);
   });
 

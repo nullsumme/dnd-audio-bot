@@ -13,10 +13,6 @@ discord:
   existingSecret: dnd-audio-bot
   tokenKey: DISCORD_BOT_TOKEN
 
-ytdlp:
-  existingCookiesSecret: ''
-  cookiesKey: cookies.txt
-
 audio:
   maxUploadBytes: '262144000'
 

@@ -1,6 +1,6 @@
 import { getContext, setContext } from 'svelte';
 import { toast } from 'svelte-sonner';
-import type { ApplicationState, AssetRole, AudioAsset, AudioAssetType } from '$lib/types';
+import type { ApplicationState, AssetRole, AudioAsset } from '$lib/types';
 
 const emptyState: ApplicationState = {
   discord: {
@@ -19,7 +19,7 @@ const emptyState: ApplicationState = {
     audioDiagnostics: {
       encoder: 'ffmpeg/libopus',
       bitrate: 64_000,
-      bufferMilliseconds: 200,
+      packetizationMilliseconds: 20,
       missedFrames: 0,
       fillerFrames: 0,
       playerPlaybackMilliseconds: 0,
@@ -31,7 +31,7 @@ const emptyState: ApplicationState = {
   sources: [],
   assets: [],
   masterVolume: 0.8,
-  capabilities: { ffmpeg: false, ffprobe: false, ytdlp: false }
+  capabilities: { ffmpeg: false, ffprobe: false }
 };
 
 export class SoundkeepClient {
@@ -67,8 +67,7 @@ export class SoundkeepClient {
     return (
       !this.state.discord.configured ||
       !this.state.capabilities.ffmpeg ||
-      !this.state.capabilities.ffprobe ||
-      !this.state.capabilities.ytdlp
+      !this.state.capabilities.ffprobe
     );
   }
 
@@ -190,26 +189,6 @@ export class SoundkeepClient {
     );
   }
 
-  async addYouTubeAsset(input: {
-    url: string;
-    mode: 'live' | 'saved';
-    name: string;
-    category: string;
-    role: AssetRole;
-  }) {
-    return this.run(
-      'youtube',
-      () =>
-        this.request('/api/library/youtube', {
-          method: 'POST',
-          body: JSON.stringify(input)
-        }),
-      input.mode === 'saved'
-        ? 'YouTube audio was downloaded and saved as MP3.'
-        : 'Live YouTube stream was added to the library.'
-    );
-  }
-
   async updateAsset(
     asset: AudioAsset,
     input: Partial<Pick<AudioAsset, 'name' | 'category' | 'role'>>,
@@ -249,17 +228,10 @@ export class SoundkeepClient {
   }
 
   preview(asset: AudioAsset) {
-    if (!asset.filename) return;
     this.#previewAudio?.pause();
     this.#previewAudio = new Audio(`/api/library/${asset.id}/file`);
     this.#previewAudio.volume = 0.7;
     void this.#previewAudio.play().catch((error) => this.showError(error));
-  }
-
-  sourceTypeLabel(type: AudioAssetType): string {
-    if (type === 'youtube-live') return 'Live YouTube';
-    if (type === 'youtube-saved') return 'Saved YouTube MP3';
-    return 'Uploaded MP3';
   }
 
   channelLabel(id: string): string {
