@@ -144,7 +144,9 @@
                 onchange={(event) =>
                   (uploadFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
               />
-              <Field.Description>Stored locally and streamed through FFmpeg.</Field.Description>
+              <Field.Description>
+                Stored locally as MP3; short soundboard effects are prewarmed for instant playback.
+              </Field.Description>
             </Field.Field>
             <Field.Field>
               <Field.Label for="upload-name">Display name</Field.Label>

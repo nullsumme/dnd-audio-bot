@@ -20,6 +20,7 @@
   import { Slider } from '$lib/components/ui/slider';
   import { Spinner } from '$lib/components/ui/spinner';
   import { useSoundkeep } from '$lib/soundkeep-client.svelte';
+  import { formatBytes } from '$lib/utils';
 
   const soundkeep = useSoundkeep();
 
@@ -278,6 +279,29 @@
         <p class="text-muted-foreground text-xs">Discord filler frames</p>
         <p class="mt-1 font-medium">
           {soundkeep.state.discord.audioDiagnostics.fillerFrames}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Cached effects</p>
+        <p class="mt-1 font-medium">{soundkeep.state.pcmCache.entries}</p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">PCM cache</p>
+        <p class="mt-1 font-medium">
+          {formatBytes(soundkeep.state.pcmCache.bytes)} /
+          {formatBytes(soundkeep.state.pcmCache.maxBytes)}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Cache hits / misses</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.pcmCache.hits} / {soundkeep.state.pcmCache.misses}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Cache failures / evictions</p>
+        <p class="mt-1 font-medium">
+          {soundkeep.state.pcmCache.failures} / {soundkeep.state.pcmCache.evictions}
         </p>
       </div>
     </Card.Content>

@@ -34,6 +34,20 @@ const emptyState: ApplicationState = {
   sources: [],
   assets: [],
   masterVolume: 0.8,
+  pcmCache: {
+    enabled: false,
+    entries: 0,
+    bytes: 0,
+    reservedBytes: 0,
+    maxBytes: 0,
+    maxEntryBytes: 0,
+    warming: 0,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    failures: 0,
+    oversized: 0
+  },
   capabilities: { ffmpeg: false, ffprobe: false }
 };
 

@@ -40,6 +40,21 @@ export interface GuildSummary {
   voiceChannels: VoiceChannelSummary[];
 }
 
+export interface PcmCacheStatus {
+  enabled: boolean;
+  entries: number;
+  bytes: number;
+  reservedBytes: number;
+  maxBytes: number;
+  maxEntryBytes: number;
+  warming: number;
+  hits: number;
+  misses: number;
+  evictions: number;
+  failures: number;
+  oversized: number;
+}
+
 export interface DiscordStatus {
   configured: boolean;
   ready: boolean;
@@ -74,6 +89,7 @@ export interface ApplicationState {
   sources: ActiveSource[];
   assets: AudioAsset[];
   masterVolume: number;
+  pcmCache: PcmCacheStatus;
   capabilities: {
     ffmpeg: boolean;
     ffprobe: boolean;

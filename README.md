@@ -95,7 +95,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.4.2 \
+  --version 0.4.3 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -106,17 +106,19 @@ voice connection and one writable library volume.
 
 ## Configuration
 
-| Variable                 |                    Default | Purpose                                                      |
-| ------------------------ | -------------------------: | ------------------------------------------------------------ |
-| `DISCORD_BOT_TOKEN`      |                   required | Bot token from the Developer Portal                          |
-| `DATA_DIR`               |                   `./data` | Library index and uploaded MP3 directory                     |
-| `FFMPEG_PATH`            |                   `ffmpeg` | FFmpeg executable                                            |
-| `FFPROBE_PATH`           |                  `ffprobe` | FFprobe executable                                           |
-| `MAX_UPLOAD_BYTES`       |                `262144000` | Per-file MP3 upload limit                                    |
-| `MAX_LIBRARY_BYTES`      |               `8589934592` | Total managed-library quota                                  |
-| `MIN_FREE_BYTES`         |                `268435456` | Free-space reserve maintained on the data volume             |
-| `MAX_CONCURRENT_UPLOADS` |                        `1` | Concurrent streamed upload/validation jobs                   |
-| `ORIGIN`                 | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
+| Variable                    |                    Default | Purpose                                                      |
+| --------------------------- | -------------------------: | ------------------------------------------------------------ |
+| `DISCORD_BOT_TOKEN`         |                   required | Bot token from the Developer Portal                          |
+| `DATA_DIR`                  |                   `./data` | Library index and uploaded MP3 directory                     |
+| `FFMPEG_PATH`               |                   `ffmpeg` | FFmpeg executable                                            |
+| `FFPROBE_PATH`              |                  `ffprobe` | FFprobe executable                                           |
+| `MAX_UPLOAD_BYTES`          |                `262144000` | Per-file MP3 upload limit                                    |
+| `MAX_LIBRARY_BYTES`         |               `8589934592` | Total managed-library quota                                  |
+| `MIN_FREE_BYTES`            |                `268435456` | Free-space reserve maintained on the data volume             |
+| `MAX_CONCURRENT_UPLOADS`    |                        `1` | Concurrent streamed upload/validation jobs                   |
+| `MAX_PCM_CACHE_BYTES`       |                 `67108864` | Aggregate in-memory cache for low-latency soundboard effects |
+| `MAX_PCM_CACHE_ENTRY_BYTES` |                 `33554432` | Per-effect decoded PCM cache limit                           |
+| `ORIGIN`                    | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
 
 The application itself does not provide user accounts. Put it behind an authenticated reverse proxy when it
 is reachable by anyone other than trusted game masters.

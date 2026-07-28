@@ -50,6 +50,9 @@ export async function POST({ request, url }: { request: Request; url: URL }) {
       category: fields.category,
       role: fields.role
     });
+    if (runtime.capabilities.ffmpeg && asset.role === 'soundboard') {
+      void runtime.pcmCache.prepare(asset, runtime.library.filePath(asset));
+    }
     return json({ asset }, { status: 201 });
   } catch (cause) {
     if (request.body && !request.body.locked) {

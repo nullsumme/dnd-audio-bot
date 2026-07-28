@@ -15,7 +15,13 @@ export async function PATCH({ params, request }: { params: { id: string }; reque
   try {
     await runtime.initialize();
     const input = updateSchema.parse(await request.json());
-    return json({ asset: await runtime.library.update(params.id, input) });
+    const asset = await runtime.library.update(params.id, input);
+    if (asset.role === 'soundboard' && runtime.capabilities.ffmpeg) {
+      void runtime.pcmCache.prepare(asset, runtime.library.filePath(asset));
+    } else {
+      runtime.pcmCache.remove(asset.id);
+    }
+    return json({ asset });
   } catch (error) {
     return apiError(error);
   }
@@ -26,6 +32,7 @@ export async function DELETE({ params }: { params: { id: string } }) {
     await runtime.initialize();
     runtime.engine.stopByAsset(params.id);
     const asset = await runtime.library.delete(params.id);
+    runtime.pcmCache.remove(asset.id);
     return json({ deleted: asset.id });
   } catch (error) {
     return apiError(error);

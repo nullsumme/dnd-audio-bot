@@ -49,6 +49,8 @@ spec:
             - { name: MAX_LIBRARY_BYTES, value: {{ .Values.audio.maxLibraryBytes | quote }} }
             - { name: MIN_FREE_BYTES, value: {{ .Values.audio.minFreeBytes | quote }} }
             - { name: MAX_CONCURRENT_UPLOADS, value: {{ .Values.audio.maxConcurrentUploads | quote }} }
+            - { name: MAX_PCM_CACHE_BYTES, value: {{ .Values.audio.maxPcmCacheBytes | quote }} }
+            - { name: MAX_PCM_CACHE_ENTRY_BYTES, value: {{ .Values.audio.maxPcmCacheEntryBytes | quote }} }
             - { name: XDG_CACHE_HOME, value: /data/.cache }
           ports:
             - name: http

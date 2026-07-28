@@ -1,5 +1,6 @@
 import type { ApplicationState } from '$lib/types';
 import { AudioEngine } from './audio/engine';
+import { SoundboardPcmCache } from './audio/pcm-cache';
 import { config } from './config';
 import { DiscordService } from './discord';
 import { AudioLibrary } from './library';
@@ -7,6 +8,7 @@ import { commandAvailable } from './process';
 
 export class ApplicationRuntime {
   readonly library = new AudioLibrary();
+  readonly pcmCache = new SoundboardPcmCache();
   readonly engine = new AudioEngine();
   readonly discord = new DiscordService(this.engine.mixer);
   capabilities = { ffmpeg: false, ffprobe: false };
@@ -26,6 +28,7 @@ export class ApplicationRuntime {
       sources: this.engine.list(),
       assets: this.library.list(),
       masterVolume: this.engine.masterVolume,
+      pcmCache: this.pcmCache.status(),
       capabilities: { ...this.capabilities }
     };
   }
@@ -37,6 +40,7 @@ export class ApplicationRuntime {
   async shutdown(): Promise<void> {
     await this.discord.shutdown();
     this.engine.destroy();
+    await this.pcmCache.shutdown();
   }
 
   async #initialize(): Promise<void> {
@@ -47,6 +51,9 @@ export class ApplicationRuntime {
     ]);
     this.capabilities = { ffmpeg, ffprobe };
     await this.discord.start();
+    if (ffmpeg) {
+      void this.pcmCache.prewarm(this.library.list(), (asset) => this.library.filePath(asset));
+    }
   }
 }
 

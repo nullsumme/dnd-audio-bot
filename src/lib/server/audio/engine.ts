@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import type { ActiveSource, AssetRole, AudioAsset } from '$lib/types';
-import { spawnDecoder, type DecoderHandle, type DecoderInput } from './decoder';
+import {
+  spawnDecoder,
+  type DecoderCallbacks,
+  type DecoderHandle,
+  type DecoderInput
+} from './decoder';
 import { PcmMixer } from './mixer';
+import { spawnPcmBufferDecoder } from './pcm-buffer-decoder';
 
 interface RuntimeSource {
   public: ActiveSource;
   input: DecoderInput;
+  pcm: Buffer | null;
   shouldLoop: boolean;
   decoder: DecoderHandle | null;
   generation: number;
@@ -41,11 +48,18 @@ export class AudioEngine {
     return this.mixer.masterVolume;
   }
 
-  playAsset(asset: AudioAsset, path: string, role: AssetRole, volume = 0.7): ActiveSource {
+  playAsset(
+    asset: AudioAsset,
+    path: string,
+    role: AssetRole,
+    volume = 0.7,
+    pcm: Buffer | null = null
+  ): ActiveSource {
     const shouldLoop = role === 'ambience';
     return this.#start({
       label: asset.name,
       input: { path, loop: shouldLoop },
+      pcm: role === 'soundboard' ? pcm : null,
       role,
       volume,
       shouldLoop,
@@ -94,6 +108,7 @@ export class AudioEngine {
   #start(input: {
     label: string;
     input: DecoderInput;
+    pcm: Buffer | null;
     role: AssetRole;
     volume: number;
     shouldLoop: boolean;
@@ -121,6 +136,7 @@ export class AudioEngine {
         ...(input.assetId ? { assetId: input.assetId } : {})
       },
       input: input.input,
+      pcm: input.pcm,
       shouldLoop: input.shouldLoop,
       decoder: null,
       generation: 0,
@@ -130,7 +146,10 @@ export class AudioEngine {
     this.#sources.set(id, source);
     this.#addMixerInput(source);
 
-    if (!pendingBarrier && stopping.length === 0) {
+    if (input.pcm) {
+      if (pendingBarrier || stopping.length > 0) this.#extendRoleBarrier(input.role, stopping);
+      this.#spawn(source);
+    } else if (!pendingBarrier && stopping.length === 0) {
       this.#spawn(source);
     } else {
       const ready = this.#extendRoleBarrier(input.role, stopping);
@@ -147,7 +166,7 @@ export class AudioEngine {
     source.public.state = source.public.state === 'restarting' ? 'restarting' : 'starting';
     delete source.public.error;
 
-    source.decoder = spawnDecoder(source.input, {
+    const callbacks: DecoderCallbacks = {
       onData: (chunk) => {
         return source.generation === generation && this.mixer.append(source.public.id, chunk);
       },
@@ -163,7 +182,10 @@ export class AudioEngine {
         }
         this.#handleAmbienceEnd(source, error);
       }
-    });
+    };
+    source.decoder = source.pcm
+      ? spawnPcmBufferDecoder(source.pcm, callbacks)
+      : spawnDecoder(source.input, callbacks);
   }
 
   #finishOneShot(source: RuntimeSource, error: string | null): void {
