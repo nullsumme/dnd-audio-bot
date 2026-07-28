@@ -7,6 +7,9 @@ export const SAMPLES_PER_FRAME = (SAMPLE_RATE * FRAME_MILLISECONDS * CHANNELS) /
 export const BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2;
 export const INPUT_HIGH_WATERMARK_BYTES = BYTES_PER_FRAME * 3;
 export const INPUT_LOW_WATERMARK_BYTES = BYTES_PER_FRAME;
+export const OUTPUT_LEAD_FRAMES = 3;
+export const OUTPUT_HIGH_WATERMARK_FRAMES = OUTPUT_LEAD_FRAMES;
+export const MAX_CATCH_UP_FRAMES = 3;
 export const MIX_BUS_HEADROOM = 0.98;
 export const MAX_MIX_LINES = 2;
 export const MIX_LINE_GAIN = MIX_BUS_HEADROOM / MAX_MIX_LINES;
@@ -67,15 +70,22 @@ export class PcmMixer extends Readable {
   #scheduler: MixerScheduler;
   #timer: object | null = null;
   #nextFrameAt: number | null = null;
+  #primed = false;
+  #emitting = false;
+  #outputLeadFrames: number;
   #diagnostics: MixerDiagnostics = {
     partialFramesDeferred: 0,
     finalPartialFramesPadded: 0,
     staleFramesDropped: 0
   };
 
-  constructor(scheduler: MixerScheduler = realtimeScheduler) {
-    super({ highWaterMark: BYTES_PER_FRAME * 10 });
+  constructor(
+    scheduler: MixerScheduler = realtimeScheduler,
+    outputLeadFrames = OUTPUT_LEAD_FRAMES
+  ) {
+    super({ highWaterMark: BYTES_PER_FRAME * OUTPUT_HIGH_WATERMARK_FRAMES });
     this.#scheduler = scheduler;
+    this.#outputLeadFrames = Math.max(0, Math.floor(outputLeadFrames));
   }
 
   get masterVolume(): number {
@@ -137,8 +147,17 @@ export class PcmMixer extends Readable {
   }
 
   override _read(): void {
-    if (this.#timer) return;
-    if (this.#nextFrameAt === null) this.#nextFrameAt = this.#scheduler.now() + FRAME_MILLISECONDS;
+    if (this.#timer || this.#emitting) return;
+    if (this.#nextFrameAt === null) {
+      this.#nextFrameAt = this.#scheduler.now() + FRAME_MILLISECONDS;
+      if (!this.#primed) {
+        this.#primed = true;
+        if (!this.#emitFrames(this.#outputLeadFrames)) {
+          this.#nextFrameAt = null;
+          return;
+        }
+      }
+    }
     this.#scheduleFrame();
   }
 
@@ -160,17 +179,31 @@ export class PcmMixer extends Readable {
     const now = this.#scheduler.now();
     const deadline = this.#nextFrameAt;
     if (deadline === null) return;
-    const missedFrames = Math.floor(Math.max(0, now - deadline) / FRAME_MILLISECONDS);
-    if (missedFrames > 0) this.#dropStaleFrames(missedFrames);
-    const flowing = this.#emitFrame();
-
     this.#timer = null;
+    const dueFrames = Math.floor(Math.max(0, now - deadline) / FRAME_MILLISECONDS) + 1;
+    const flowing = this.#emitFrames(Math.min(dueFrames, MAX_CATCH_UP_FRAMES));
     if (!flowing) {
       this.#nextFrameAt = null;
       return;
     }
-    this.#nextFrameAt = missedFrames > 0 ? now + FRAME_MILLISECONDS : deadline + FRAME_MILLISECONDS;
+    this.#nextFrameAt =
+      dueFrames > MAX_CATCH_UP_FRAMES
+        ? now + FRAME_MILLISECONDS
+        : deadline + dueFrames * FRAME_MILLISECONDS;
     this.#scheduleFrame();
+  }
+
+  #emitFrames(count: number): boolean {
+    let flowing = true;
+    this.#emitting = true;
+    try {
+      for (let index = 0; index < count && flowing; index += 1) {
+        flowing = this.#emitFrame();
+      }
+    } finally {
+      this.#emitting = false;
+    }
+    return flowing;
   }
 
   #emitFrame(): boolean {
@@ -205,20 +238,6 @@ export class PcmMixer extends Readable {
     const flowing = this.push(mixPcmFrames(frames, this.#masterVolume));
     finished.forEach((callback) => callback());
     return flowing;
-  }
-
-  #dropStaleFrames(missedFrames: number): void {
-    for (const input of this.#inputs.values()) {
-      const availableFrames = input.ended
-        ? Math.ceil(input.buffer.length / BYTES_PER_FRAME)
-        : Math.floor(input.buffer.length / BYTES_PER_FRAME);
-      const droppedFrames = Math.min(missedFrames, Math.max(0, availableFrames - 1));
-      if (droppedFrames === 0) continue;
-      input.buffer = input.buffer.subarray(droppedFrames * BYTES_PER_FRAME);
-      input.partialDeferred = false;
-      this.#diagnostics.staleFramesDropped += droppedFrames;
-      this.#releaseBackpressure(input);
-    }
   }
 
   #releaseBackpressure(input: MixerInput): void {

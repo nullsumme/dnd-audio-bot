@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BYTES_PER_FRAME,
   FRAME_MILLISECONDS,
@@ -13,6 +13,15 @@ function constantFrame(value: number): Buffer {
   const frame = Buffer.alloc(BYTES_PER_FRAME);
   for (let offset = 0; offset < frame.length; offset += 2) frame.writeInt16LE(value, offset);
   return frame;
+}
+
+function capturePushedFrames(mixer: PcmMixer): Buffer[] {
+  const frames: Buffer[] = [];
+  vi.spyOn(mixer, 'push').mockImplementation((chunk) => {
+    if (Buffer.isBuffer(chunk)) frames.push(Buffer.from(chunk));
+    return true;
+  });
+  return frames;
 }
 
 function createScheduler() {
@@ -35,6 +44,9 @@ function createScheduler() {
     scheduler,
     get delay() {
       return delay;
+    },
+    get scheduled() {
+      return scheduled !== null;
     },
     fireAt(milliseconds: number) {
       now = milliseconds;
@@ -99,7 +111,7 @@ describe('mixPcmFrames', () => {
 describe('PcmMixer timing', () => {
   it('defers fragmented PCM until one complete frame is prebuffered', () => {
     const clock = createScheduler();
-    const mixer = new PcmMixer(clock.scheduler);
+    const mixer = new PcmMixer(clock.scheduler, 0);
     const frame = constantFrame(1_000);
     mixer.setMasterVolume(1);
     mixer.addInput('toy', 1);
@@ -123,7 +135,7 @@ describe('PcmMixer timing', () => {
 
   it('pads one fragmented Toy-sized final frame exactly once and drains the full tail', () => {
     const clock = createScheduler();
-    const mixer = new PcmMixer(clock.scheduler);
+    const mixer = new PcmMixer(clock.scheduler, 0);
     const toyBytes = Math.round(1.392 * 48_000 * 2 * 2);
     const toy = Buffer.alloc(toyBytes);
     for (let offset = 0; offset < toy.length; offset += 2) toy.writeInt16LE(1_000, offset);
@@ -173,7 +185,7 @@ describe('PcmMixer timing', () => {
     mixer.destroy();
   });
 
-  it('drops stale PCM and resets its deadline instead of burst catch-up after an event-loop stall', () => {
+  it('primes a three-frame output lead before starting its real-time clock', () => {
     const clock = createScheduler();
     const mixer = new PcmMixer(clock.scheduler);
     mixer.setMasterVolume(1);
@@ -182,15 +194,131 @@ describe('PcmMixer timing', () => {
       'ambience',
       Buffer.concat([constantFrame(1_000), constantFrame(2_000), constantFrame(3_000)])
     );
+    const output = capturePushedFrames(mixer);
+
+    mixer._read();
+
+    expect(mixer.readableHighWaterMark).toBe(BYTES_PER_FRAME * 3);
+    expect(output.map((frame) => frame.readInt16LE(0))).toEqual(
+      [1_000, 2_000, 3_000].map((value) => Math.round(value * MIX_LINE_GAIN))
+    );
+    expect(clock.delay).toBe(FRAME_MILLISECONDS);
+    mixer.destroy();
+  });
+
+  it('catches up bounded frames in order instead of deleting late PCM', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    mixer.setMasterVolume(1);
+    mixer.addInput('ambience', 1);
+    mixer.append(
+      'ambience',
+      Buffer.concat([constantFrame(1_000), constantFrame(2_000), constantFrame(3_000)])
+    );
+    const output = capturePushedFrames(mixer);
     mixer._read();
 
     clock.fireAt(65);
 
-    expect(mixer.readableLength).toBe(BYTES_PER_FRAME);
-    const output = mixer.read(BYTES_PER_FRAME) as Buffer;
-    expect(output.readInt16LE(0)).toBe(Math.round(3_000 * MIX_LINE_GAIN));
-    expect(mixer.diagnostics.staleFramesDropped).toBe(2);
+    expect(output.map((frame) => frame.readInt16LE(0))).toEqual(
+      [1_000, 2_000, 3_000].map((value) => Math.round(value * MIX_LINE_GAIN))
+    );
+    expect(mixer.diagnostics.staleFramesDropped).toBe(0);
+    expect(clock.delay).toBe(15);
+    mixer.destroy();
+  });
+
+  it('preserves the soundboard attack while catching up over ambience', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    mixer.setMasterVolume(1);
+    mixer.addInput('ambience', 1);
+    mixer.addInput('soundboard', 1);
+    mixer.append(
+      'ambience',
+      Buffer.concat([constantFrame(1_000), constantFrame(2_000), constantFrame(3_000)])
+    );
+    mixer.append(
+      'soundboard',
+      Buffer.concat([constantFrame(10_000), constantFrame(20_000), constantFrame(30_000)])
+    );
+    const output = capturePushedFrames(mixer);
+    mixer._read();
+
+    clock.fireAt(65);
+
+    expect(output.map((frame) => frame.readInt16LE(0))).toEqual(
+      [11_000, 22_000, 33_000].map((value) => Math.round(value * MIX_LINE_GAIN))
+    );
+    expect(mixer.diagnostics.staleFramesDropped).toBe(0);
+    mixer.destroy();
+  });
+
+  it('mixes a newly started soundboard attack on the next cadence frame', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    mixer.setMasterVolume(1);
+    mixer.addInput('ambience', 1);
+    mixer.append('ambience', Buffer.concat([constantFrame(1_000), constantFrame(2_000)]));
+    const output = capturePushedFrames(mixer);
+    mixer._read();
+    clock.fireAt(20);
+
+    mixer.addInput('soundboard', 1);
+    mixer.append('soundboard', constantFrame(10_000));
+    clock.fireAt(40);
+
+    expect(output.map((frame) => frame.readInt16LE(0))).toEqual(
+      [1_000, 12_000].map((value) => Math.round(value * MIX_LINE_GAIN))
+    );
+    mixer.destroy();
+  });
+
+  it('caps a long-stall catch-up at three frames and rebases the deadline', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler, 0);
+    mixer.setMasterVolume(1);
+    mixer.addInput('ambience', 1);
+    mixer.append(
+      'ambience',
+      Buffer.concat([1_000, 2_000, 3_000, 4_000, 5_000, 6_000].map((value) => constantFrame(value)))
+    );
+    const output = capturePushedFrames(mixer);
+    mixer._read();
+
+    clock.fireAt(220);
+
+    expect(output.map((frame) => frame.readInt16LE(0))).toEqual(
+      [1_000, 2_000, 3_000].map((value) => Math.round(value * MIX_LINE_GAIN))
+    );
+    expect(mixer.bufferedBytes('ambience')).toBe(BYTES_PER_FRAME * 3);
+    expect(mixer.diagnostics.staleFramesDropped).toBe(0);
     expect(clock.delay).toBe(FRAME_MILLISECONDS);
+
+    clock.fireAt(240);
+
+    expect(output.at(-1)?.readInt16LE(0)).toBe(Math.round(4_000 * MIX_LINE_GAIN));
+    expect(mixer.bufferedBytes('ambience')).toBe(BYTES_PER_FRAME * 2);
+    mixer.destroy();
+  });
+
+  it('honors output backpressure without priming twice on resume', () => {
+    const clock = createScheduler();
+    const mixer = new PcmMixer(clock.scheduler);
+    mixer.addInput('ambience', 1);
+    mixer.append('ambience', Buffer.alloc(BYTES_PER_FRAME * 3));
+    mixer._read();
+    expect(mixer.readableLength).toBe(BYTES_PER_FRAME * 3);
+    expect(clock.scheduled).toBe(false);
+    mixer.read(BYTES_PER_FRAME * 3);
+    expect(mixer.readableLength).toBe(0);
+    mixer._read();
+    expect(clock.scheduled).toBe(true);
+    expect(clock.delay).toBe(FRAME_MILLISECONDS);
+
+    mixer.append('ambience', Buffer.alloc(BYTES_PER_FRAME));
+    clock.fireAt(FRAME_MILLISECONDS);
+    expect(mixer.readableLength).toBe(BYTES_PER_FRAME);
     mixer.destroy();
   });
 });
