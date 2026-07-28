@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AudioAsset } from '$lib/types';
 
 interface CapturedDecoder {
-  input: { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string };
+  input:
+    { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string; loop: boolean };
   callbacks: {
     onData(chunk: Buffer): boolean;
     onPlaying(): void;
@@ -44,13 +45,27 @@ function asset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
     name: id,
     category: role === 'ambience' ? 'Weather' : 'Effects',
     role,
+    sourceType: 'mp3',
     filename: `${id}.mp3`,
     originalFilename: `${id}.mp3`,
     mimeType: 'audio/mpeg',
+    youtubeUrl: null,
     size: 1_024,
     duration: 10,
     createdAt: timestamp,
     updatedAt: timestamp
+  };
+}
+
+function liveAsset(id: string, role: 'ambience' | 'soundboard'): AudioAsset {
+  return {
+    ...asset(id, role),
+    sourceType: 'youtube-live',
+    filename: null,
+    originalFilename: null,
+    mimeType: null,
+    youtubeUrl: `https://youtu.be/${id.toLowerCase()}`,
+    size: 0
   };
 }
 
@@ -67,9 +82,9 @@ describe('AudioEngine source lifecycle', () => {
     vi.useRealTimers();
   });
 
-  it('keeps multiple ambience sources and overlapping one-shots active together', () => {
+  it('keeps exactly one source on each mix line and replaces only that line', () => {
     const rain = engine.playAsset(asset('Rain', 'ambience'), '/data/rain.mp3', 'ambience');
-    const tavern = engine.playYouTube({ url: 'https://youtu.be/tavern', title: 'Tavern' });
+    const tavern = engine.playAsset(liveAsset('Tavern', 'ambience'), null, 'ambience');
     const thunderOne = engine.playAsset(
       asset('Thunder', 'soundboard'),
       '/data/thunder.mp3',
@@ -81,22 +96,23 @@ describe('AudioEngine source lifecycle', () => {
       'soundboard'
     );
 
-    expect(new Set(engine.list().map((source) => source.id)).size).toBe(4);
-    expect(engine.list().filter((source) => source.role === 'ambience')).toHaveLength(2);
-    expect(engine.list().filter((source) => source.role === 'soundboard')).toHaveLength(2);
+    expect(engine.list()).toHaveLength(2);
+    expect(engine.list().filter((source) => source.role === 'ambience')).toHaveLength(1);
+    expect(engine.list().filter((source) => source.role === 'soundboard')).toHaveLength(1);
     expect(thunderOne.id).not.toBe(thunderTwo.id);
+    expect(engine.list().some((source) => source.id === rain.id)).toBe(false);
+    expect(engine.list().some((source) => source.id === thunderOne.id)).toBe(false);
+    expect(captured.decoders[0].stopped).toBe(true);
+    expect(captured.decoders[2].stopped).toBe(true);
     expect(captured.decoders.map((decoder) => decoder.input)).toEqual([
       { kind: 'file', path: '/data/rain.mp3', loop: true },
-      { kind: 'youtube', url: 'https://youtu.be/tavern' },
+      { kind: 'youtube', url: 'https://youtu.be/tavern', loop: true },
       { kind: 'file', path: '/data/thunder.mp3', loop: false },
       { kind: 'file', path: '/data/thunder.mp3', loop: false }
     ]);
 
-    captured.decoders[2].callbacks.onEnd(null);
-    expect(engine.list().map((source) => source.id)).toEqual(
-      expect.arrayContaining([rain.id, tavern.id, thunderTwo.id])
-    );
-    expect(engine.list().some((source) => source.id === thunderOne.id)).toBe(false);
+    captured.decoders[3].callbacks.onEnd(null);
+    expect(engine.list()).toMatchObject([{ id: tavern.id, role: 'ambience' }]);
   });
 
   it('restarts ambience after EOF while one-shots remove themselves', async () => {
@@ -129,9 +145,9 @@ describe('AudioEngine source lifecycle', () => {
     const shared = asset('Storm', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
     engine.playAsset(shared, '/data/storm.mp3', 'soundboard');
-    engine.playYouTube({ url: 'https://youtu.be/rain', title: 'Rain' });
+    engine.playAsset(liveAsset('Rain', 'ambience'), null, 'ambience');
 
-    expect(engine.stopByAsset(shared.id)).toBe(2);
+    expect(engine.stopByAsset(shared.id)).toBe(1);
     expect(engine.list()).toMatchObject([{ origin: 'youtube', label: 'Rain' }]);
     expect(captured.decoders.slice(0, 2).every((decoder) => decoder.stopped)).toBe(true);
   });

@@ -6,7 +6,10 @@ import { inspectYouTube } from '$lib/server/youtube';
 
 const schema = z.object({
   url: z.string().min(1),
-  volume: z.number().min(0).max(1).optional()
+  mode: z.enum(['live', 'saved']),
+  name: z.string().max(100).default(''),
+  category: z.string().max(40).default(''),
+  role: z.enum(['ambience', 'soundboard'])
 });
 
 export async function POST({ request }: { request: Request }) {
@@ -14,13 +17,18 @@ export async function POST({ request }: { request: Request }) {
     await runtime.initialize();
     if (!runtime.capabilities.ytdlp) throw new Error('yt-dlp is not available on the server.');
     const input = schema.parse(await request.json());
+    if (input.mode === 'saved' && !runtime.capabilities.ffmpeg) {
+      throw new Error('FFmpeg is required to save YouTube audio as MP3.');
+    }
     const metadata = await inspectYouTube(input.url);
-    const source = runtime.engine.playYouTube({
-      url: metadata.url,
-      title: metadata.title,
-      volume: input.volume
+    const asset = await runtime.library.addYouTube({
+      metadata,
+      mode: input.mode,
+      name: input.name,
+      category: input.category,
+      role: input.role
     });
-    return json({ source, metadata }, { status: 201 });
+    return json({ asset }, { status: 201 });
   } catch (error) {
     return apiError(error);
   }

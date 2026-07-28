@@ -51,7 +51,10 @@ describe('spawnDecoder YouTube media resolution', () => {
       onPlaying: vi.fn(),
       onEnd: vi.fn()
     };
-    const decoder = spawnDecoder({ kind: 'youtube', url: 'https://youtu.be/example' }, callbacks);
+    const decoder = spawnDecoder(
+      { kind: 'youtube', url: 'https://youtu.be/example', loop: true },
+      callbacks
+    );
     const [resolver] = fakes.children;
     resolver.stdout.write('https://media.example/audio.webm\n');
     resolver.exitCode = 0;
@@ -82,7 +85,10 @@ describe('spawnDecoder YouTube media resolution', () => {
       onPlaying: vi.fn(),
       onEnd: vi.fn()
     };
-    const decoder = spawnDecoder({ kind: 'youtube', url: 'https://youtu.be/example' }, callbacks);
+    const decoder = spawnDecoder(
+      { kind: 'youtube', url: 'https://youtu.be/example', loop: true },
+      callbacks
+    );
     const [resolver] = fakes.children;
 
     decoder.stop();

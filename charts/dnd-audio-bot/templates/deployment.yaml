@@ -45,7 +45,6 @@ spec:
                   key: {{ .Values.discord.tokenKey }}
             - { name: DATA_DIR, value: /data }
             - { name: BODY_SIZE_LIMIT, value: 256M }
-            - { name: MAX_ACTIVE_SOURCES, value: {{ .Values.audio.maxActiveSources | quote }} }
             - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
             - { name: XDG_CACHE_HOME, value: /data/.cache }
             {{- if .Values.ytdlp.existingCookiesSecret }}

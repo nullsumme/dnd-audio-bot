@@ -8,7 +8,6 @@ services:
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:?Set DISCORD_BOT_TOKEN in .env}
       ORIGIN: ${ORIGIN:-http://localhost:3000}
       BODY_SIZE_LIMIT: 256M
-      MAX_ACTIVE_SOURCES: 16
     ports:
       - '3000:3000'
     volumes:

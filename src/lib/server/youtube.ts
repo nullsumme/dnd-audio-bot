@@ -28,7 +28,7 @@ export function normalizeYouTubeUrl(input: string): string {
 }
 
 function commonArgs(): string[] {
-  const args = ['--js-runtimes', 'node', '--no-playlist', '--no-warnings'];
+  const args = ['--ignore-config', '--js-runtimes', 'node', '--no-playlist', '--no-warnings'];
   if (config.ytdlpCookiesFile) args.push('--cookies', config.ytdlpCookiesFile);
   return args;
 }
@@ -64,4 +64,30 @@ export async function inspectYouTube(input: string): Promise<YouTubeMetadata> {
     duration: typeof result.duration === 'number' && result.duration >= 0 ? result.duration : null,
     url
   };
+}
+
+export async function downloadYouTubeMp3(input: string, outputTemplate: string): Promise<void> {
+  const url = normalizeYouTubeUrl(input);
+  await execFileAsync(
+    config.ytdlpPath,
+    [
+      ...commonArgs(),
+      '--quiet',
+      '--format',
+      'bestaudio/best',
+      '--extract-audio',
+      '--audio-format',
+      'mp3',
+      '--audio-quality',
+      '0',
+      '--output',
+      outputTemplate,
+      '--',
+      url
+    ],
+    {
+      timeout: 15 * 60_000,
+      maxBuffer: 10 * 1024 * 1024
+    }
+  );
 }

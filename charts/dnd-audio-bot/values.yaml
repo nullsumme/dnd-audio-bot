@@ -18,7 +18,6 @@ ytdlp:
   cookiesKey: cookies.txt
 
 audio:
-  maxActiveSources: 16
   maxUploadBytes: '262144000'
 
 service:

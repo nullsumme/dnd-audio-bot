@@ -4,7 +4,7 @@ import { terminateProcess } from '../process';
 import { ytdlpMediaUrlArgs } from '../youtube';
 
 export type DecoderInput =
-  { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string };
+  { kind: 'file'; path: string; loop: boolean } | { kind: 'youtube'; url: string; loop: boolean };
 
 export interface DecoderCallbacks {
   onData(chunk: Buffer): boolean;
@@ -110,7 +110,7 @@ export function spawnDecoder(input: DecoderInput, callbacks: DecoderCallbacks): 
         callbacks.onEnd('yt-dlp did not return a playable HTTP media URL.');
         return;
       }
-      startFfmpeg(['-stream_loop', '-1', '-re', '-i', mediaUrl]);
+      startFfmpeg([...(input.loop ? ['-stream_loop', '-1'] : []), '-re', '-i', mediaUrl]);
     });
   } else {
     startFfmpeg([...(input.loop ? ['-stream_loop', '-1'] : []), '-re', '-i', input.path]);
