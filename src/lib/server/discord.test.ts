@@ -14,13 +14,20 @@ describe('DiscordService audio player', () => {
     mixer = null;
   });
 
-  it('keeps the perpetual mixer paused until a voice connection can receive it', async () => {
+  it('discards an unconsumed audio pipeline before preparing a fresh connection', async () => {
+    let pipelinesCreated = 0;
+    let pipelinesStopped = 0;
     mixer = new PcmMixer();
-    service = new DiscordService(mixer, (input) => ({
-      stream: input,
-      inputType: StreamType.Raw,
-      stop() {}
-    }));
+    service = new DiscordService(mixer, (input) => {
+      pipelinesCreated += 1;
+      return {
+        stream: input,
+        inputType: StreamType.Raw,
+        stop() {
+          pipelinesStopped += 1;
+        }
+      };
+    });
     service.prepareAudio();
 
     await expect.poll(() => service?.status().playerState, { timeout: 3_000 }).toBe('autopaused');
@@ -35,5 +42,14 @@ describe('DiscordService audio player', () => {
         missedFrames: 0
       }
     });
+
+    service.disconnect();
+    expect(pipelinesStopped).toBe(1);
+    expect(service.status().playerState).toBe('idle');
+
+    service.prepareAudio();
+    expect(pipelinesCreated).toBe(2);
+    service.disconnect();
+    expect(pipelinesStopped).toBe(2);
   });
 });

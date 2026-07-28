@@ -91,7 +91,6 @@ export class DiscordService {
     this.#started = true;
     try {
       await this.client.login(config.discordToken);
-      this.prepareAudio();
       this.#error = null;
     } catch (error) {
       this.#started = false;
@@ -163,7 +162,6 @@ export class DiscordService {
 
   async connect(channelId: string): Promise<DiscordStatus> {
     if (!this.client.isReady()) throw new Error('The Discord bot is not ready.');
-    this.prepareAudio();
     const channel = await this.client.channels.fetch(channelId);
     if (!channel || channel.type !== ChannelType.GuildVoice) {
       throw new Error('Choose a Discord voice channel visible to the bot.');
@@ -178,10 +176,12 @@ export class DiscordService {
       selfMute: false
     });
     this.#connection = connection;
+    this.prepareAudio();
     const subscription = connection.subscribe(this.player);
     if (!subscription) {
       connection.destroy();
       this.#connection = null;
+      this.#disposeAudio();
       throw new Error('Discord rejected the audio-player subscription.');
     }
     this.#watchConnection(connection, channel.guild);
@@ -194,6 +194,7 @@ export class DiscordService {
     } catch {
       connection.destroy();
       if (this.#connection === connection) this.#connection = null;
+      this.#disposeAudio();
       this.#error = `Could not connect to #${channel.name}. Check the bot's Connect and Speak permissions.`;
       throw new Error(this.#error);
     }
@@ -204,14 +205,18 @@ export class DiscordService {
     this.#connection = null;
     if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed)
       connection.destroy();
+    this.#disposeAudio();
   }
 
   async shutdown(): Promise<void> {
     this.disconnect();
+    this.client.destroy();
+  }
+
+  #disposeAudio(): void {
     this.player.stop(true);
     this.#opusPipeline?.stop();
     this.#opusPipeline = null;
-    this.client.destroy();
   }
 
   #connectedChannel(): VoiceBasedChannel | null {
@@ -239,6 +244,7 @@ export class DiscordService {
         this.#error = `Disconnected from ${guild.name}; reconnect from the dashboard.`;
         connection.destroy();
         this.#connection = null;
+        this.#disposeAudio();
       }
     });
   }
