@@ -13,8 +13,16 @@ interface CapturedDecoder {
   finishStop(): void;
 }
 
+interface CapturedPcmDecoder {
+  pcm: Buffer;
+  callbacks: CapturedDecoder['callbacks'];
+  resumed: number;
+  stopRequested: boolean;
+}
+
 const captured = vi.hoisted(() => ({
-  decoders: [] as CapturedDecoder[]
+  decoders: [] as CapturedDecoder[],
+  pcmDecoders: [] as CapturedPcmDecoder[]
 }));
 
 vi.mock('./decoder', () => ({
@@ -46,6 +54,29 @@ vi.mock('./decoder', () => ({
   }
 }));
 
+vi.mock('./pcm-buffer-decoder', () => ({
+  spawnPcmBufferDecoder: (
+    pcm: Buffer,
+    callbacks: CapturedPcmDecoder['callbacks']
+  ): { resume(): void; stop(): Promise<void> } => {
+    const decoder: CapturedPcmDecoder = {
+      pcm,
+      callbacks,
+      resumed: 0,
+      stopRequested: false
+    };
+    captured.pcmDecoders.push(decoder);
+    return {
+      resume() {
+        decoder.resumed += 1;
+      },
+      async stop() {
+        decoder.stopRequested = true;
+      }
+    };
+  }
+}));
+
 import { AMBIENCE_RETRY_DELAY_MILLISECONDS, AudioEngine, MAX_AMBIENCE_RESTARTS } from './engine';
 import { BYTES_PER_FRAME, INPUT_HIGH_WATERMARK_BYTES } from './mixer';
 
@@ -71,6 +102,7 @@ describe('AudioEngine source lifecycle', () => {
 
   beforeEach(() => {
     captured.decoders.length = 0;
+    captured.pcmDecoders.length = 0;
     engine = new AudioEngine();
   });
 
@@ -120,6 +152,33 @@ describe('AudioEngine source lifecycle', () => {
     expect(second.id).not.toBe(third.id);
     expect(captured.decoders).toHaveLength(1);
     expect(captured.decoders[0].stopRequested).toBe(true);
+
+    captured.decoders[0].finishStop();
+    await vi.waitFor(() => expect(captured.decoders).toHaveLength(2));
+    expect(captured.decoders[1].input.path).toBe('/data/third.mp3');
+    expect(engine.list()).toMatchObject([{ id: third.id }]);
+  });
+
+  it('starts cached effects immediately while retaining the FFmpeg replacement barrier', async () => {
+    const first = engine.playAsset(asset('First', 'soundboard'), '/data/first.mp3', 'soundboard');
+    const cachedPcm = Buffer.alloc(BYTES_PER_FRAME * 2);
+    const cached = engine.playAsset(
+      asset('Cached', 'soundboard'),
+      '/data/cached.mp3',
+      'soundboard',
+      0.8,
+      cachedPcm
+    );
+
+    expect(captured.decoders).toHaveLength(1);
+    expect(captured.decoders[0].stopRequested).toBe(true);
+    expect(captured.pcmDecoders).toMatchObject([{ pcm: cachedPcm }]);
+    expect(engine.list()).toMatchObject([{ id: cached.id, state: 'starting' }]);
+    expect(engine.list().some((source) => source.id === first.id)).toBe(false);
+
+    const third = engine.playAsset(asset('Third', 'soundboard'), '/data/third.mp3', 'soundboard');
+    expect(captured.pcmDecoders[0].stopRequested).toBe(true);
+    expect(captured.decoders).toHaveLength(1);
 
     captured.decoders[0].finishStop();
     await vi.waitFor(() => expect(captured.decoders).toHaveLength(2));

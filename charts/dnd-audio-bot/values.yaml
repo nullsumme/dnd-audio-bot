@@ -18,6 +18,8 @@ audio:
   maxLibraryBytes: '8589934592'
   minFreeBytes: '268435456'
   maxConcurrentUploads: 1
+  maxPcmCacheBytes: '67108864'
+  maxPcmCacheEntryBytes: '33554432'
 
 service:
   type: ClusterIP

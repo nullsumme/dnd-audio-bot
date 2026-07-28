@@ -7,6 +7,13 @@ function positiveInteger(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function nonNegativeInteger(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 export const config = {
   discordToken: process.env.DISCORD_BOT_TOKEN?.trim() ?? '',
   dataDir: resolve(process.env.DATA_DIR?.trim() || './data'),
@@ -15,5 +22,7 @@ export const config = {
   maxUploadBytes: positiveInteger('MAX_UPLOAD_BYTES', 250 * 1024 * 1024),
   maxLibraryBytes: positiveInteger('MAX_LIBRARY_BYTES', 8 * 1024 * 1024 * 1024),
   minFreeBytes: positiveInteger('MIN_FREE_BYTES', 256 * 1024 * 1024),
-  maxConcurrentUploads: positiveInteger('MAX_CONCURRENT_UPLOADS', 1)
+  maxConcurrentUploads: positiveInteger('MAX_CONCURRENT_UPLOADS', 1),
+  maxPcmCacheBytes: nonNegativeInteger('MAX_PCM_CACHE_BYTES', 64 * 1024 * 1024),
+  maxPcmCacheEntryBytes: nonNegativeInteger('MAX_PCM_CACHE_ENTRY_BYTES', 32 * 1024 * 1024)
 } as const;
