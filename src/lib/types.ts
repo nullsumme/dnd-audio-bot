@@ -1,3 +1,5 @@
+import type { DiscordBitrateMode } from '$lib/audio-quality';
+
 export type AssetRole = 'ambience' | 'soundboard';
 export type SourceState = 'starting' | 'playing' | 'restarting' | 'failed';
 
@@ -31,6 +33,7 @@ export interface VoiceChannelSummary {
   guildId: string;
   name: string;
   position: number;
+  bitrate: number;
 }
 
 export interface GuildSummary {
@@ -70,7 +73,10 @@ export interface DiscordStatus {
   subscribed: boolean;
   audioDiagnostics: {
     encoder: 'ffmpeg/libopus';
-    bitrate: number;
+    bitrateMode: DiscordBitrateMode;
+    bitrate: number | null;
+    channelBitrate: number | null;
+    bitrateReconfiguring: boolean;
     packetizationMilliseconds: number;
     missedFrames: number;
     fillerFrames: number;

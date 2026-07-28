@@ -45,6 +45,7 @@ spec:
                   key: {{ .Values.discord.tokenKey }}
             - { name: DATA_DIR, value: /data }
             - { name: BODY_SIZE_LIMIT, value: 256M }
+            - { name: DISCORD_OPUS_BITRATE_MODE, value: {{ .Values.audio.opusBitrateMode | quote }} }
             - { name: MAX_UPLOAD_BYTES, value: {{ .Values.audio.maxUploadBytes | quote }} }
             - { name: MAX_LIBRARY_BYTES, value: {{ .Values.audio.maxLibraryBytes | quote }} }
             - { name: MIN_FREE_BYTES, value: {{ .Values.audio.minFreeBytes | quote }} }

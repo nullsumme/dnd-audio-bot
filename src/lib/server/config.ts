@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { DEFAULT_DISCORD_BITRATE_MODE, isDiscordBitrateMode } from '$lib/audio-quality';
 
 function positiveInteger(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -14,8 +15,14 @@ function nonNegativeInteger(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function discordBitrateMode() {
+  const value = process.env.DISCORD_OPUS_BITRATE_MODE?.trim().toLowerCase();
+  return isDiscordBitrateMode(value) ? value : DEFAULT_DISCORD_BITRATE_MODE;
+}
+
 export const config = {
   discordToken: process.env.DISCORD_BOT_TOKEN?.trim() ?? '',
+  discordOpusBitrateMode: discordBitrateMode(),
   dataDir: resolve(process.env.DATA_DIR?.trim() || './data'),
   ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
   ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',

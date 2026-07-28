@@ -32,9 +32,8 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import {
-  DISCORD_OPUS_ARGS,
-  DISCORD_OPUS_BITRATE,
   DISCORD_OPUS_PAGE_MILLISECONDS,
+  buildDiscordOpusArgs,
   spawnDiscordOpusEncoder
 } from './encoder';
 
@@ -45,30 +44,33 @@ describe('Discord Opus encoder', () => {
   });
 
   it('emits and flushes one low-delay Opus packet per Discord frame', () => {
-    expect(DISCORD_OPUS_BITRATE).toBe(64_000);
     expect(DISCORD_OPUS_PAGE_MILLISECONDS).toBe(20);
-    expect(DISCORD_OPUS_ARGS).toEqual(
-      expect.arrayContaining([
-        '-b:a',
-        '64000',
-        '-vbr',
-        'constrained',
-        '-application',
-        'lowdelay',
-        '-frame_duration',
-        '20',
-        '-page_duration',
-        '20000',
-        '-flush_packets',
-        '1'
-      ])
-    );
+    for (const bitrate of [64_000, 96_000, 128_000]) {
+      expect(buildDiscordOpusArgs(bitrate)).toEqual(
+        expect.arrayContaining([
+          '-b:a',
+          `${bitrate}`,
+          '-vbr',
+          'constrained',
+          '-application',
+          'lowdelay',
+          '-frame_duration',
+          '20',
+          '-page_duration',
+          '20000',
+          '-flush_packets',
+          '1'
+        ])
+      );
+    }
+    expect(() => buildDiscordOpusArgs(7_999)).toThrow(RangeError);
+    expect(() => buildDiscordOpusArgs(128_001)).toThrow(RangeError);
   });
 
   it('reports clean and failed unexpected exits', () => {
     const input = new PassThrough();
     const lifecycle = { onError: vi.fn(), onClose: vi.fn() };
-    spawnDiscordOpusEncoder(input, lifecycle);
+    spawnDiscordOpusEncoder(input, 96_000, lifecycle);
     const clean = fakes.children[0];
 
     clean.emit('close', 0, null);
@@ -79,7 +81,7 @@ describe('Discord Opus encoder', () => {
       message: null
     });
 
-    spawnDiscordOpusEncoder(input, lifecycle);
+    spawnDiscordOpusEncoder(input, 128_000, lifecycle);
     const failed = fakes.children[1];
     failed.stderr.emit('data', Buffer.from('encoder failed'));
     failed.emit('close', 1, null);
@@ -94,7 +96,7 @@ describe('Discord Opus encoder', () => {
   it('distinguishes child errors and waits for intentional shutdown to close', async () => {
     const input = new PassThrough();
     const lifecycle = { onError: vi.fn(), onClose: vi.fn() };
-    const pipeline = spawnDiscordOpusEncoder(input, lifecycle);
+    const pipeline = spawnDiscordOpusEncoder(input, 64_000, lifecycle);
     const child = fakes.children[0];
 
     child.emit('error', new Error('spawn failed'));
@@ -115,5 +117,93 @@ describe('Discord Opus encoder', () => {
       expected: true,
       message: 'Discord Opus encoder exited with code unknown.'
     });
+  });
+
+  it('isolates warm-up input from pipe backpressure and reports a blocked candidate', () => {
+    const input = new PassThrough();
+    const activeSink = new PassThrough();
+    const activeFrames: string[] = [];
+    activeSink.on('data', (chunk: Buffer) => activeFrames.push(chunk.toString('utf8')));
+    input.pipe(activeSink);
+    const pipeSpy = vi.spyOn(input, 'pipe');
+    const lifecycle = { onError: vi.fn(), onClose: vi.fn() };
+
+    spawnDiscordOpusEncoder(input, 96_000, lifecycle, { isolatedInput: true });
+    const child = fakes.children[0];
+    const candidateWrite = vi.spyOn(child.stdin, 'write').mockReturnValue(false);
+
+    expect(pipeSpy).not.toHaveBeenCalled();
+    input.write(Buffer.from('first'));
+    input.write(Buffer.from('second'));
+
+    expect(activeFrames).toEqual(['first', 'second']);
+    expect(candidateWrite).toHaveBeenCalledTimes(1);
+    expect(lifecycle.onError).toHaveBeenCalledOnce();
+    expect(lifecycle.onError).toHaveBeenCalledWith(
+      'Discord Opus encoder warm-up input backpressured before it became playable.'
+    );
+    expect(pipeSpy).not.toHaveBeenCalled();
+
+    child.emit('close', 1, null);
+    input.unpipe(activeSink);
+  });
+
+  it('detaches isolated warm-up input on stop and unexpected close', async () => {
+    const stoppedInput = new PassThrough();
+    const stoppedLifecycle = { onError: vi.fn(), onClose: vi.fn() };
+    const stoppedPipeline = spawnDiscordOpusEncoder(stoppedInput, 64_000, stoppedLifecycle, {
+      isolatedInput: true
+    });
+    const stoppedChild = fakes.children[0];
+    const stoppedWrite = vi.spyOn(stoppedChild.stdin, 'write');
+    const stoppedListener = stoppedInput.listeners('data')[0];
+
+    expect(stoppedListener).toBeTypeOf('function');
+    const stopping = stoppedPipeline.stop();
+    expect(stoppedInput.listeners('data')).not.toContain(stoppedListener);
+    stoppedInput.write(Buffer.from('after stop'));
+    expect(stoppedWrite).not.toHaveBeenCalled();
+    stoppedChild.emit('close', null, 'SIGTERM');
+    await stopping;
+
+    const closedInput = new PassThrough();
+    const closedLifecycle = { onError: vi.fn(), onClose: vi.fn() };
+    spawnDiscordOpusEncoder(closedInput, 128_000, closedLifecycle, { isolatedInput: true });
+    const closedChild = fakes.children[1];
+    const closedWrite = vi.spyOn(closedChild.stdin, 'write');
+    const closedListener = closedInput.listeners('data')[0];
+
+    expect(closedListener).toBeTypeOf('function');
+    closedChild.emit('close', 1, null);
+    expect(closedInput.listeners('data')).not.toContain(closedListener);
+    closedInput.write(Buffer.from('after close'));
+    expect(closedWrite).not.toHaveBeenCalled();
+  });
+
+  it('promotes isolated warm-up input to the normal piped path', async () => {
+    const input = new PassThrough();
+    const pipeSpy = vi.spyOn(input, 'pipe');
+    const unpipeSpy = vi.spyOn(input, 'unpipe');
+    const lifecycle = { onError: vi.fn(), onClose: vi.fn() };
+    const pipeline = spawnDiscordOpusEncoder(input, 96_000, lifecycle, { isolatedInput: true });
+    const child = fakes.children[0];
+    const isolatedListener = input.listeners('data')[0];
+
+    expect(isolatedListener).toBeTypeOf('function');
+    expect(pipeSpy).not.toHaveBeenCalled();
+    pipeline.promoteInput?.();
+
+    expect(input.listeners('data')).not.toContain(isolatedListener);
+    expect(pipeSpy).toHaveBeenCalledOnce();
+    expect(pipeSpy).toHaveBeenCalledWith(child.stdin);
+
+    const pipedWrite = vi.spyOn(child.stdin, 'write');
+    input.write(Buffer.from('promoted'));
+    expect(pipedWrite).toHaveBeenCalledWith(Buffer.from('promoted'));
+
+    const stopping = pipeline.stop();
+    expect(unpipeSpy).toHaveBeenCalledWith(child.stdin);
+    child.emit('close', null, 'SIGTERM');
+    await stopping;
   });
 });

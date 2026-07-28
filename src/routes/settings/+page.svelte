@@ -4,6 +4,7 @@
     CheckCircle2,
     CircleX,
     Cpu,
+    Gauge,
     Headphones,
     LogOut,
     Radio,
@@ -19,6 +20,8 @@
   import { Separator } from '$lib/components/ui/separator';
   import { Slider } from '$lib/components/ui/slider';
   import { Spinner } from '$lib/components/ui/spinner';
+  import * as ToggleGroup from '$lib/components/ui/toggle-group';
+  import { isDiscordBitrateMode, type DiscordBitrateMode } from '$lib/audio-quality';
   import { useSoundkeep } from '$lib/soundkeep-client.svelte';
   import { formatBytes } from '$lib/utils';
 
@@ -30,6 +33,10 @@
       ''
   );
   let masterPercent = $state(Math.round(soundkeep.state.masterVolume * 100));
+  let bitrateMode = $state<DiscordBitrateMode>(
+    soundkeep.state.discord.audioDiagnostics.bitrateMode
+  );
+  let bitrateDirty = $state(false);
 
   $effect(() => {
     if (!selectedChannel) {
@@ -40,9 +47,35 @@
     }
   });
 
+  $effect(() => {
+    if (!bitrateDirty && soundkeep.busy !== 'discord-bitrate') {
+      bitrateMode = soundkeep.state.discord.audioDiagnostics.bitrateMode;
+    }
+  });
+
   async function changeMasterVolume(event: Event) {
     masterPercent = Number((event.currentTarget as HTMLInputElement).value);
     await soundkeep.changeMasterVolume(masterPercent / 100);
+  }
+
+  function selectBitrateMode(value: string) {
+    if (!isDiscordBitrateMode(value)) return;
+    bitrateMode = value;
+    bitrateDirty = value !== soundkeep.state.discord.audioDiagnostics.bitrateMode;
+  }
+
+  async function applyBitrateMode() {
+    const applied = await soundkeep.changeDiscordBitrate(bitrateMode);
+    bitrateDirty = false;
+    if (!applied) bitrateMode = soundkeep.state.discord.audioDiagnostics.bitrateMode;
+  }
+
+  function bitrateLabel(value: number | null, fallback: string) {
+    return value === null ? fallback : `${Math.round(value / 1_000)} kbps`;
+  }
+
+  function bitrateModeLabel(value: DiscordBitrateMode) {
+    return value === 'auto' ? 'Auto' : `${Math.round(Number(value) / 1_000)} kbps`;
   }
 </script>
 
@@ -126,6 +159,86 @@
                   Connect
                 </Button>
               {/if}
+            </div>
+          </Field.Group>
+        </Card.Content>
+      </Card.Root>
+
+      <Card.Root>
+        <Card.Header>
+          <Card.Title class="flex items-center gap-2">
+            <Gauge />
+            Discord audio quality
+          </Card.Title>
+          <Card.Description>
+            Choose the Opus quality target used for the final stereo mix.
+          </Card.Description>
+        </Card.Header>
+        <Card.Content>
+          <Field.Group>
+            <Field.Field>
+              <Field.Label id="discord-bitrate-label">Opus bitrate</Field.Label>
+              <ToggleGroup.Root
+                type="single"
+                variant="outline"
+                spacing={1}
+                value={bitrateMode}
+                onValueChange={selectBitrateMode}
+                disabled={soundkeep.busy !== null}
+                aria-labelledby="discord-bitrate-label"
+                class="w-full flex-wrap"
+              >
+                <ToggleGroup.Item value="auto" class="flex-1">Auto</ToggleGroup.Item>
+                <ToggleGroup.Item value="64000" class="flex-1">64 kbps</ToggleGroup.Item>
+                <ToggleGroup.Item value="96000" class="flex-1">96 kbps</ToggleGroup.Item>
+                <ToggleGroup.Item value="128000" class="flex-1">128 kbps</ToggleGroup.Item>
+              </ToggleGroup.Root>
+              <Field.Description>
+                Auto uses the Discord channel limit up to 128 kbps. Fixed choices are also capped by
+                the channel.
+              </Field.Description>
+            </Field.Field>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <div>
+                <p class="text-muted-foreground text-xs">Configured</p>
+                <p class="mt-1 font-medium">
+                  {bitrateModeLabel(soundkeep.state.discord.audioDiagnostics.bitrateMode)}
+                </p>
+                {#if bitrateDirty}
+                  <p class="text-muted-foreground mt-1 text-xs">
+                    Pending: {bitrateModeLabel(bitrateMode)}
+                  </p>
+                {/if}
+              </div>
+              <div>
+                <p class="text-muted-foreground text-xs">Channel limit</p>
+                <p class="mt-1 font-medium">
+                  {bitrateLabel(
+                    soundkeep.state.discord.audioDiagnostics.channelBitrate,
+                    'Not connected'
+                  )}
+                </p>
+              </div>
+              <div>
+                <p class="text-muted-foreground text-xs">Current output</p>
+                <p class="mt-1 font-medium">
+                  {bitrateLabel(soundkeep.state.discord.audioDiagnostics.bitrate, 'Inactive')}
+                  {#if soundkeep.state.discord.audioDiagnostics.bitrateReconfiguring}
+                    (updating)
+                  {/if}
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center justify-end">
+              <Button
+                disabled={!bitrateDirty || soundkeep.busy !== null}
+                onclick={applyBitrateMode}
+              >
+                {#if soundkeep.busy === 'discord-bitrate'}
+                  <Spinner data-icon="inline-start" />
+                {/if}
+                Apply bitrate
+              </Button>
             </div>
           </Field.Group>
         </Card.Content>
@@ -240,9 +353,21 @@
         <p class="mt-1 font-medium">{soundkeep.state.discord.audioDiagnostics.encoder}</p>
       </div>
       <div>
-        <p class="text-muted-foreground text-xs">Bitrate</p>
+        <p class="text-muted-foreground text-xs">Configured bitrate</p>
         <p class="mt-1 font-medium">
-          {Math.round(soundkeep.state.discord.audioDiagnostics.bitrate / 1_000)} kbps
+          {bitrateModeLabel(soundkeep.state.discord.audioDiagnostics.bitrateMode)}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Discord channel limit</p>
+        <p class="mt-1 font-medium">
+          {bitrateLabel(soundkeep.state.discord.audioDiagnostics.channelBitrate, 'Not connected')}
+        </p>
+      </div>
+      <div>
+        <p class="text-muted-foreground text-xs">Current output bitrate</p>
+        <p class="mt-1 font-medium">
+          {bitrateLabel(soundkeep.state.discord.audioDiagnostics.bitrate, 'Inactive')}
         </p>
       </div>
       <div>

@@ -18,6 +18,7 @@
     "audio": {
       "type": "object",
       "required": [
+        "opusBitrateMode",
         "maxUploadBytes",
         "maxLibraryBytes",
         "minFreeBytes",
@@ -26,6 +27,10 @@
         "maxPcmCacheEntryBytes"
       ],
       "properties": {
+        "opusBitrateMode": {
+          "type": "string",
+          "enum": ["auto", "64000", "96000", "128000"]
+        },
         "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "maxLibraryBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "minFreeBytes": { "type": "string", "pattern": "^[0-9]+$" },

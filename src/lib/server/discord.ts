@@ -7,19 +7,21 @@ import {
   NoSubscriberBehavior,
   StreamType,
   VoiceConnectionStatus,
+  type AudioResource,
   type VoiceConnection
 } from '@discordjs/voice';
 import {
   ChannelType,
   Client,
+  Events,
   GatewayIntentBits,
   type Guild,
   type VoiceBasedChannel
 } from 'discord.js';
+import { resolveDiscordOpusBitrate, type DiscordBitrateMode } from '$lib/audio-quality';
 import type { DiscordStatus, GuildSummary } from '$lib/types';
 import { config } from './config';
 import {
-  DISCORD_OPUS_BITRATE,
   DISCORD_OPUS_PAGE_MILLISECONDS,
   spawnDiscordOpusEncoder,
   type DiscordOpusEncoderLifecycle,
@@ -32,6 +34,10 @@ export const DISCORD_AUDIO_RETRY_MAX_MILLISECONDS = 5_000;
 export const DISCORD_LOGIN_RETRY_BASE_MILLISECONDS = 1_000;
 export const DISCORD_LOGIN_RETRY_MAX_MILLISECONDS = 30_000;
 export const DISCORD_VOICE_RECOVERY_MILLISECONDS = 10_000;
+export const DISCORD_BITRATE_PRIME_FRAMES = 3;
+export const DISCORD_BITRATE_PRIME_TIMEOUT_MILLISECONDS = 500;
+export const DISCORD_BITRATE_RETRY_BASE_MILLISECONDS = 250;
+export const DISCORD_BITRATE_RETRY_MAX_MILLISECONDS = 5_000;
 
 interface DiscordAudioPipeline extends DiscordOpusPipeline {
   inputType: StreamType;
@@ -39,11 +45,18 @@ interface DiscordAudioPipeline extends DiscordOpusPipeline {
 
 type AudioPipelineFactory = (
   mixer: PcmMixer,
-  lifecycle: DiscordOpusEncoderLifecycle
+  bitrate: number,
+  lifecycle: DiscordOpusEncoderLifecycle,
+  isolatedInput: boolean
 ) => DiscordAudioPipeline;
 
-const createDefaultAudioPipeline: AudioPipelineFactory = (mixer, lifecycle) => ({
-  ...spawnDiscordOpusEncoder(mixer, lifecycle),
+const createDefaultAudioPipeline: AudioPipelineFactory = (
+  mixer,
+  bitrate,
+  lifecycle,
+  isolatedInput
+) => ({
+  ...spawnDiscordOpusEncoder(mixer, bitrate, lifecycle, { isolatedInput }),
   inputType: StreamType.OggOpus
 });
 
@@ -57,11 +70,71 @@ interface OwnedConnection {
 interface OwnedAudioPipeline {
   generation: number;
   connectionGeneration: number;
+  bitrate: number;
   pipeline: DiscordAudioPipeline;
+}
+
+interface CandidateAudioPipeline extends OwnedAudioPipeline {
+  resource: AudioResource;
+  abortController: AbortController;
+  promote(): void;
+  activate(): void;
+  stop(): Promise<void>;
 }
 
 function retryDelay(attempt: number, base: number, maximum: number): number {
   return Math.min(maximum, base * 2 ** Math.min(attempt, 20));
+}
+
+function abortError(reason: unknown): Error {
+  return reason instanceof Error ? reason : new Error('Audio bitrate change was cancelled.');
+}
+
+async function waitForBufferedFrames(
+  resource: AudioResource,
+  signal: AbortSignal,
+  frames = DISCORD_BITRATE_PRIME_FRAMES
+): Promise<void> {
+  if (resource.playStream.readableLength >= frames) return;
+  await new Promise<void>((resolve, reject) => {
+    const stream = resource.playStream;
+    const timer = setTimeout(() => {
+      finish(
+        new Error(
+          `The replacement Opus encoder did not produce ${frames} packets within ${DISCORD_BITRATE_PRIME_TIMEOUT_MILLISECONDS} ms.`
+        )
+      );
+    }, DISCORD_BITRATE_PRIME_TIMEOUT_MILLISECONDS);
+    timer.unref();
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      stream.off('readable', onReadable);
+      stream.off('error', onError);
+      stream.off('end', onEnd);
+      stream.off('close', onEnd);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const finish = (error?: Error) => {
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onReadable = () => {
+      if (stream.readableLength >= frames) finish();
+    };
+    const onError = (error: Error) => finish(error);
+    const onEnd = () => finish(new Error('The replacement Opus encoder ended during warm-up.'));
+    const onAbort = () => finish(abortError(signal.reason));
+
+    stream.on('readable', onReadable);
+    stream.once('error', onError);
+    stream.once('end', onEnd);
+    stream.once('close', onEnd);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else onReadable();
+  });
 }
 
 export class DiscordService {
@@ -83,6 +156,17 @@ export class DiscordService {
   #connectionGeneration = 0;
   #pipelineGeneration = 0;
   #pipelineStopBarrier: Promise<void> = Promise.resolve();
+  #candidateCleanupBarrier: Promise<void> = Promise.resolve();
+  #bitrateMode: DiscordBitrateMode;
+  #bitrateModeRevision = 0;
+  #bitrateRequestSequence = 0;
+  #bitrateReconfigureBarrier: Promise<void> = Promise.resolve();
+  #bitrateReconfigureError: Error | null = null;
+  #bitrateReconfiguring = false;
+  #bitrateCandidate: CandidateAudioPipeline | null = null;
+  #bitrateRetryAttempt = 0;
+  #bitrateRetryTimer: NodeJS.Timeout | null = null;
+  #fillerFramesOffset = 0;
   #connectionExpected = false;
   #audioRetryAttempt = 0;
   #audioRetryTimer: NodeJS.Timeout | null = null;
@@ -96,19 +180,31 @@ export class DiscordService {
   constructor(
     mixer: PcmMixer,
     createAudioPipeline = createDefaultAudioPipeline,
-    discordToken = config.discordToken
+    discordToken = config.discordToken,
+    bitrateMode = config.discordOpusBitrateMode
   ) {
     this.#mixer = mixer;
     this.#createAudioPipeline = createAudioPipeline;
     this.#discordToken = discordToken;
+    this.#bitrateMode = bitrateMode;
     this.player.on('error', (error) => {
       const owned = this.#opusPipeline;
       if (!owned) return;
+      if (this.#bitrateCandidate?.generation === owned.generation) {
+        this.#bitrateCandidate.abortController.abort(error);
+        return;
+      }
       this.#failAudioPipeline(owned.generation, `Discord audio player: ${error.message}`);
     });
     this.player.on(AudioPlayerStatus.Idle, () => {
       const owned = this.#opusPipeline;
       if (!owned || !this.#isConnectionExpected(owned.connectionGeneration)) return;
+      if (this.#bitrateCandidate?.generation === owned.generation) {
+        this.#bitrateCandidate.abortController.abort(
+          new Error('Discord rejected the replacement audio resource.')
+        );
+        return;
+      }
       this.#failAudioPipeline(owned.generation, 'Discord audio player stopped unexpectedly.');
     });
     this.player.on(AudioPlayerStatus.Playing, () => {
@@ -121,6 +217,29 @@ export class DiscordService {
       this.#error = `Discord client: ${error.message}`;
       console.error(this.#error);
     });
+    this.client.on(Events.ChannelUpdate, (oldChannel, newChannel) => {
+      if (
+        oldChannel.id !== newChannel.id ||
+        newChannel.id !== this.#connectedChannel()?.id ||
+        !('bitrate' in oldChannel) ||
+        !('bitrate' in newChannel) ||
+        oldChannel.bitrate === newChannel.bitrate
+      )
+        return;
+      this.#clearBitrateRetry();
+      const { completion } = this.#requestBitrateReconfigure();
+      void completion.then(
+        () => this.#clearBitrateRetry(),
+        (error) => {
+          this.#error =
+            error instanceof Error
+              ? `Discord audio bitrate: ${error.message}`
+              : 'Discord audio bitrate change failed.';
+          console.error(this.#error);
+          this.#scheduleBitrateRetry();
+        }
+      );
+    });
   }
 
   async prepareAudio(): Promise<void> {
@@ -128,32 +247,309 @@ export class DiscordService {
   }
 
   async #prepareAudio(connectionGeneration: number): Promise<number> {
-    await this.#pipelineStopBarrier;
+    if (this.#opusPipeline) return this.#opusPipeline.generation;
+    await Promise.all([this.#pipelineStopBarrier, this.#candidateCleanupBarrier]);
     if (!this.#isConnectionExpected(connectionGeneration))
       throw new Error('The Discord voice connection is no longer available.');
     if (this.#connection?.connection.state.status !== VoiceConnectionStatus.Ready)
       throw new Error('The Discord voice connection is not ready.');
-    if (this.#opusPipeline) return this.#opusPipeline.generation;
+    const existingPipeline = this.#opusPipeline as OwnedAudioPipeline | null;
+    if (existingPipeline) return existingPipeline.generation;
+    const channel = this.#connectedChannel();
+    if (!channel) throw new Error('The connected Discord voice channel is unavailable.');
+    const bitrate = resolveDiscordOpusBitrate(this.#bitrateMode, channel.bitrate);
     const generation = ++this.#pipelineGeneration;
-    const pipeline = this.#createAudioPipeline(this.#mixer, {
-      onError: (message) =>
-        this.#failAudioPipeline(generation, `Discord audio pipeline: ${message}`),
-      onClose: (event) => {
-        if (event.expected) return;
-        this.#failAudioPipeline(
-          generation,
-          event.message
-            ? `Discord audio pipeline: ${event.message}`
-            : 'Discord audio pipeline: Opus encoder exited unexpectedly.'
+    const pipeline = this.#createAudioPipeline(
+      this.#mixer,
+      bitrate,
+      {
+        onError: (message) =>
+          this.#failAudioPipeline(generation, `Discord audio pipeline: ${message}`),
+        onClose: (event) => {
+          if (event.expected) return;
+          this.#failAudioPipeline(
+            generation,
+            event.message
+              ? `Discord audio pipeline: ${event.message}`
+              : 'Discord audio pipeline: Opus encoder exited unexpectedly.'
+          );
+        }
+      },
+      false
+    );
+    const owned = { generation, connectionGeneration, bitrate, pipeline };
+    try {
+      const resource = createAudioResource(pipeline.stream, {
+        inputType: pipeline.inputType
+      });
+      this.#opusPipeline = owned;
+      this.player.play(resource);
+    } catch (error) {
+      if (this.#opusPipeline === owned) this.#opusPipeline = null;
+      await pipeline.stop().catch((stopError) => {
+        console.error(
+          `Discord audio pipeline shutdown: ${
+            stopError instanceof Error ? stopError.message : 'unknown encoder shutdown error'
+          }`
+        );
+      });
+      throw error;
+    }
+    return generation;
+  }
+
+  async setBitrateMode(mode: DiscordBitrateMode): Promise<DiscordStatus> {
+    if (this.#shuttingDown) throw new Error('The Discord service is shutting down.');
+    this.#clearBitrateRetry();
+    const previousMode = this.#bitrateMode;
+    const changed = mode !== previousMode;
+    if (changed) {
+      this.#bitrateMode = mode;
+      this.#bitrateModeRevision += 1;
+    }
+    const revision = this.#bitrateModeRevision;
+    const { completion } = this.#requestBitrateReconfigure();
+    try {
+      await completion;
+      return this.status();
+    } catch (error) {
+      if (changed && this.#bitrateModeRevision === revision) {
+        this.#bitrateMode = previousMode;
+        this.#bitrateModeRevision += 1;
+        const { completion: rollback } = this.#requestBitrateReconfigure();
+        await rollback.catch((rollbackError) => {
+          this.#error = `Discord audio bitrate rollback: ${
+            rollbackError instanceof Error ? rollbackError.message : 'replacement failed.'
+          }`;
+          console.error(this.#error);
+          this.#scheduleBitrateRetry();
+        });
+      }
+      throw error;
+    }
+  }
+
+  #requestBitrateReconfigure(): { sequence: number; completion: Promise<void> } {
+    const sequence = ++this.#bitrateRequestSequence;
+    this.#bitrateReconfiguring = true;
+    this.#bitrateReconfigureError = null;
+    void this.#cancelBitrateCandidate('A newer audio bitrate request replaced this one.');
+    const operation = this.#bitrateReconfigureBarrier.then(() =>
+      this.#reconfigureBitrate(sequence)
+    );
+    this.#bitrateReconfigureBarrier = operation.then(
+      () => {
+        if (sequence === this.#bitrateRequestSequence) this.#bitrateReconfigureError = null;
+      },
+      (error) => {
+        if (sequence === this.#bitrateRequestSequence)
+          this.#bitrateReconfigureError = abortError(error);
+      }
+    );
+    return { sequence, completion: this.#awaitBitrateConvergence() };
+  }
+
+  async #awaitBitrateConvergence(): Promise<void> {
+    while (true) {
+      const barrier = this.#bitrateReconfigureBarrier;
+      await barrier;
+      if (barrier !== this.#bitrateReconfigureBarrier) continue;
+      this.#bitrateReconfiguring = false;
+      if (this.#bitrateReconfigureError) throw this.#bitrateReconfigureError;
+      const owned = this.#opusPipeline;
+      const channel = this.#connectedChannel();
+      if (
+        owned &&
+        channel &&
+        owned.bitrate !== resolveDiscordOpusBitrate(this.#bitrateMode, channel.bitrate)
+      ) {
+        throw new Error('The active Opus encoder did not reach the requested bitrate.');
+      }
+      return;
+    }
+  }
+
+  async #reconfigureBitrate(sequence: number): Promise<void> {
+    await Promise.all([this.#pipelineStopBarrier, this.#candidateCleanupBarrier]);
+    if (sequence !== this.#bitrateRequestSequence) return;
+    const owned = this.#opusPipeline;
+    const connection = this.#connection;
+    const channel = this.#connectedChannel();
+    if (
+      !owned ||
+      !connection ||
+      !channel ||
+      connection.generation !== owned.connectionGeneration ||
+      connection.connection.state.status !== VoiceConnectionStatus.Ready
+    )
+      return;
+
+    const bitrate = resolveDiscordOpusBitrate(this.#bitrateMode, channel.bitrate);
+    if (owned.bitrate === bitrate) return;
+    let candidate: CandidateAudioPipeline | null = null;
+    try {
+      candidate = await this.#createBitrateCandidate(connection.generation, bitrate);
+    } catch (error) {
+      if (sequence !== this.#bitrateRequestSequence) return;
+      throw error;
+    }
+    if (sequence !== this.#bitrateRequestSequence) {
+      await this.#stopBitrateCandidate(candidate);
+      return;
+    }
+    this.#bitrateCandidate = candidate;
+
+    try {
+      await waitForBufferedFrames(candidate.resource, candidate.abortController.signal);
+      const currentChannel = this.#connectedChannel();
+      if (
+        candidate.abortController.signal.aborted ||
+        sequence !== this.#bitrateRequestSequence ||
+        this.#bitrateCandidate !== candidate ||
+        this.#opusPipeline !== owned ||
+        !this.#isCurrentConnection(connection.generation, connection.connection) ||
+        connection.connection.state.status !== VoiceConnectionStatus.Ready ||
+        !currentChannel ||
+        resolveDiscordOpusBitrate(this.#bitrateMode, currentChannel.bitrate) !== bitrate
+      ) {
+        throw new Error('The Discord audio state changed during bitrate warm-up.');
+      }
+
+      while (candidate.resource.playStream.readableLength > DISCORD_BITRATE_PRIME_FRAMES) {
+        candidate.resource.playStream.read();
+      }
+
+      candidate.promote();
+      this.#opusPipeline = candidate;
+      const previousFillerFrames = this.#currentFillerFrames();
+      try {
+        this.player.play(candidate.resource);
+      } catch (error) {
+        this.#opusPipeline = owned;
+        throw error;
+      }
+      this.#fillerFramesOffset += previousFillerFrames;
+      try {
+        owned.pipeline.releaseInput?.();
+        candidate.pipeline.promoteInput?.();
+      } catch (error) {
+        void this.#queuePipelineStop(owned);
+        throw error;
+      }
+      void this.#queuePipelineStop(owned);
+      await this.#waitForPromotedPlayer(candidate);
+      if (
+        sequence !== this.#bitrateRequestSequence ||
+        this.#opusPipeline !== candidate ||
+        !this.#isCurrentConnection(connection.generation, connection.connection)
+      )
+        return;
+      candidate.activate();
+      if (this.#bitrateCandidate === candidate) this.#bitrateCandidate = null;
+      this.#audioRetryAttempt = 0;
+      this.#clearBitrateRetry();
+      if (this.#error?.startsWith('Discord audio bitrate')) this.#error = null;
+    } catch (error) {
+      if (this.#bitrateCandidate === candidate) this.#bitrateCandidate = null;
+      if (this.#opusPipeline !== candidate) {
+        await this.#stopBitrateCandidate(candidate);
+      } else {
+        await this.#failPromotedBitratePipeline(
+          candidate,
+          `Discord audio bitrate: ${error instanceof Error ? error.message : 'replacement failed.'}`
         );
       }
+      if (sequence !== this.#bitrateRequestSequence) return;
+      throw error;
+    }
+  }
+
+  async #createBitrateCandidate(
+    connectionGeneration: number,
+    bitrate: number
+  ): Promise<CandidateAudioPipeline> {
+    const generation = ++this.#pipelineGeneration;
+    const abortController = new AbortController();
+    let stage: 'warming' | 'promoting' | 'active' | 'stopping' = 'warming';
+    const fail = (message: string) => {
+      if (stage === 'warming' || stage === 'promoting') abortController.abort(new Error(message));
+      else if (stage === 'active') this.#failAudioPipeline(generation, message);
+    };
+    const pipeline = this.#createAudioPipeline(
+      this.#mixer,
+      bitrate,
+      {
+        onError: (message) => fail(`Discord audio pipeline: ${message}`),
+        onClose: (event) => {
+          if (event.expected || stage === 'stopping') return;
+          fail(
+            event.message
+              ? `Discord audio pipeline: ${event.message}`
+              : 'Discord audio pipeline: Opus encoder exited unexpectedly.'
+          );
+        }
+      },
+      true
+    );
+    let resource: AudioResource;
+    try {
+      resource = createAudioResource(pipeline.stream, {
+        inputType: pipeline.inputType
+      });
+    } catch (error) {
+      stage = 'stopping';
+      await this.#trackCandidateCleanup(Promise.resolve().then(() => pipeline.stop()));
+      throw error;
+    }
+    let stopPromise: Promise<void> | null = null;
+
+    return {
+      generation,
+      connectionGeneration,
+      bitrate,
+      pipeline,
+      resource,
+      abortController,
+      promote() {
+        stage = 'promoting';
+      },
+      activate() {
+        stage = 'active';
+      },
+      stop() {
+        if (!stopPromise) {
+          stage = 'stopping';
+          abortController.abort(new Error('The replacement Opus encoder was stopped.'));
+          stopPromise = pipeline.stop();
+        }
+        return stopPromise;
+      }
+    };
+  }
+
+  async #waitForPromotedPlayer(candidate: CandidateAudioPipeline): Promise<void> {
+    const signal = candidate.abortController.signal;
+    if (signal.aborted) throw abortError(signal.reason);
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        if (error) reject(abortError(error));
+        else resolve();
+      };
+      const onAbort = () => finish(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      void entersState(this.player, AudioPlayerStatus.Playing, 5_000).then(
+        () => finish(),
+        (error) => finish(error)
+      );
     });
-    this.#opusPipeline = { generation, connectionGeneration, pipeline };
-    const resource = createAudioResource(pipeline.stream, {
-      inputType: pipeline.inputType
-    });
-    this.player.play(resource);
-    return generation;
   }
 
   async start(): Promise<void> {
@@ -215,19 +611,32 @@ export class DiscordService {
         Boolean(this.#connection?.connection.state.subscription),
       audioDiagnostics: {
         encoder: 'ffmpeg/libopus',
-        bitrate: DISCORD_OPUS_BITRATE,
+        bitrateMode: this.#bitrateMode,
+        bitrate: this.#opusPipeline?.bitrate ?? null,
+        channelBitrate: channel?.bitrate ?? null,
+        bitrateReconfiguring:
+          this.#bitrateReconfiguring || Boolean(this.#bitrateCandidate || this.#bitrateRetryTimer),
         packetizationMilliseconds: DISCORD_OPUS_PAGE_MILLISECONDS,
         missedFrames: 'missedFrames' in playerState ? playerState.missedFrames : 0,
-        fillerFrames: Math.max(
-          0,
-          Math.round((playerPlaybackMilliseconds - resourcePlaybackMilliseconds) / 20)
-        ),
+        fillerFrames: this.#fillerFramesOffset + this.#currentFillerFrames(),
         ...this.#mixer.diagnostics,
         playerPlaybackMilliseconds,
         resourcePlaybackMilliseconds
       },
       error: this.#error
     };
+  }
+
+  #currentFillerFrames(): number {
+    const playerState = this.player.state;
+    const playerPlaybackMilliseconds =
+      'playbackDuration' in playerState ? playerState.playbackDuration : 0;
+    const resourcePlaybackMilliseconds =
+      'resource' in playerState ? playerState.resource.playbackDuration : 0;
+    return Math.max(
+      0,
+      Math.round((playerPlaybackMilliseconds - resourcePlaybackMilliseconds) / 20)
+    );
   }
 
   guilds(): GuildSummary[] {
@@ -246,7 +655,8 @@ export class DiscordService {
             id: channel.id,
             guildId: guild.id,
             name: channel.name,
-            position: channel.rawPosition
+            position: channel.rawPosition,
+            bitrate: channel.bitrate
           }))
       }))
       .filter((guild) => guild.voiceChannels.length > 0)
@@ -266,10 +676,12 @@ export class DiscordService {
     const generation = ++this.#connectionGeneration;
     this.#connectionExpected = false;
     this.#clearAudioRetry();
+    this.#clearBitrateRetry();
     this.#disposeConnection();
     await this.#disposeAudio();
     if (generation !== this.#connectionGeneration)
       throw new Error('This voice connection request was superseded by a newer request.');
+    this.#fillerFramesOffset = 0;
 
     const connection = joinVoiceChannel({
       channelId: channel.id,
@@ -318,6 +730,7 @@ export class DiscordService {
       this.#connectionExpected = false;
       this.#connection = null;
       this.#clearAudioRetry();
+      this.#clearBitrateRetry();
       await this.#disposeAudioForConnection(generation);
       this.#error = failureMessage;
       throw new Error(this.#error);
@@ -329,6 +742,7 @@ export class DiscordService {
     this.#connectionGeneration += 1;
     this.#connectionExpected = false;
     this.#clearAudioRetry();
+    this.#clearBitrateRetry();
     this.#disposeConnection();
     void this.#disposeAudio();
   }
@@ -341,11 +755,23 @@ export class DiscordService {
     this.#connectionExpected = false;
     this.#clearLoginRetry();
     this.#clearAudioRetry();
+    this.#clearBitrateRetry();
+    const candidateCleanup = this.#cancelBitrateReconfigure(
+      'The Discord service is shutting down.'
+    );
     this.#disposeConnection();
     const pendingLogin = this.#loginPromise;
     const audioCleanup = this.#disposeAudio();
+    const bitrateCleanup = this.#bitrateReconfigureBarrier.catch(() => undefined);
     const clientCleanup = Promise.resolve(this.client.destroy());
-    await Promise.all([audioCleanup, clientCleanup, pendingLogin ?? Promise.resolve()]);
+    await Promise.all([
+      audioCleanup,
+      bitrateCleanup,
+      candidateCleanup,
+      clientCleanup,
+      pendingLogin ?? Promise.resolve()
+    ]);
+    await Promise.all([this.#pipelineStopBarrier, this.#candidateCleanupBarrier]);
   }
 
   #disposeConnection(): void {
@@ -358,20 +784,78 @@ export class DiscordService {
   async #disposeAudio(generation?: number): Promise<void> {
     const owned = this.#opusPipeline;
     if (generation !== undefined && owned?.generation !== generation) return;
+    const candidateCleanup = this.#cancelBitrateReconfigure(
+      'The active Discord audio pipeline changed.'
+    );
+    if (owned) this.#fillerFramesOffset += this.#currentFillerFrames();
     this.#opusPipeline = null;
     this.player.stop(true);
-    if (!owned) {
-      await this.#pipelineStopBarrier;
-      return;
-    }
+    const activeCleanup = owned ? this.#queuePipelineStop(owned) : this.#pipelineStopBarrier;
+    await Promise.all([activeCleanup, candidateCleanup]);
+    await this.#candidateCleanupBarrier;
+  }
+
+  #queuePipelineStop(owned: OwnedAudioPipeline): Promise<void> {
     const stopTask = this.#pipelineStopBarrier
-      .then(() => owned.pipeline.stop())
+      .then(() =>
+        'stop' in owned && typeof owned.stop === 'function' ? owned.stop() : owned.pipeline.stop()
+      )
       .catch((error) => {
         const message = error instanceof Error ? error.message : 'unknown encoder shutdown error';
         console.error(`Discord audio pipeline shutdown: ${message}`);
       });
     this.#pipelineStopBarrier = stopTask;
-    await stopTask;
+    return stopTask;
+  }
+
+  #trackCandidateCleanup(cleanup: Promise<void>): Promise<void> {
+    const cleanupTask = cleanup.catch((error) => {
+      const message = error instanceof Error ? error.message : 'unknown encoder shutdown error';
+      console.error(`Discord bitrate candidate shutdown: ${message}`);
+    });
+    this.#candidateCleanupBarrier = Promise.all([this.#candidateCleanupBarrier, cleanupTask]).then(
+      () => undefined
+    );
+    return cleanupTask;
+  }
+
+  #stopBitrateCandidate(candidate: CandidateAudioPipeline): Promise<void> {
+    return this.#trackCandidateCleanup(Promise.resolve().then(() => candidate.stop()));
+  }
+
+  #cancelBitrateCandidate(message: string): Promise<void> {
+    const candidate = this.#bitrateCandidate;
+    if (!candidate) return this.#candidateCleanupBarrier;
+    this.#bitrateCandidate = null;
+    candidate.abortController.abort(new Error(message));
+    return this.#stopBitrateCandidate(candidate);
+  }
+
+  #cancelBitrateReconfigure(message: string): Promise<void> {
+    this.#bitrateRequestSequence += 1;
+    this.#bitrateReconfiguring = false;
+    this.#bitrateReconfigureError = null;
+    return this.#cancelBitrateCandidate(message);
+  }
+
+  async #failPromotedBitratePipeline(
+    candidate: CandidateAudioPipeline,
+    message: string
+  ): Promise<void> {
+    if (this.#bitrateCandidate === candidate) this.#bitrateCandidate = null;
+    if (this.#opusPipeline !== candidate) {
+      await this.#stopBitrateCandidate(candidate);
+      return;
+    }
+    this.#error = message;
+    console.error(message);
+    this.#clearBitrateRetry();
+    const connectionGeneration = candidate.connectionGeneration;
+    this.#fillerFramesOffset += this.#currentFillerFrames();
+    this.#opusPipeline = null;
+    this.player.stop(true);
+    await this.#queuePipelineStop(candidate);
+    this.#scheduleAudioRecovery(connectionGeneration);
   }
 
   async #disposeAudioForConnection(connectionGeneration: number): Promise<void> {
@@ -403,6 +887,7 @@ export class DiscordService {
       this.#connection = null;
       this.#connectionExpected = false;
       this.#clearAudioRetry();
+      this.#clearBitrateRetry();
       void this.#disposeAudioForConnection(generation);
     });
     connection.on(VoiceConnectionStatus.Disconnected, () => {
@@ -432,6 +917,7 @@ export class DiscordService {
       this.#connection = null;
       this.#connectionExpected = false;
       this.#clearAudioRetry();
+      this.#clearBitrateRetry();
       if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
       await this.#disposeAudioForConnection(generation);
     }
@@ -469,6 +955,7 @@ export class DiscordService {
     if (!owned || owned.generation !== generation) return;
     this.#error = message;
     console.error(message);
+    this.#clearBitrateRetry();
     const connectionGeneration = owned.connectionGeneration;
     void this.#disposeAudio(generation).then(() => {
       this.#scheduleAudioRecovery(connectionGeneration);
@@ -510,6 +997,7 @@ export class DiscordService {
       )
         return;
       this.#audioRetryAttempt = 0;
+      this.#clearBitrateRetry();
       if (this.#error?.startsWith('Discord audio')) this.#error = null;
     } catch (error) {
       if (!this.#isConnectionExpected(connectionGeneration)) return;
@@ -537,6 +1025,58 @@ export class DiscordService {
       this.#loginPromise = this.#attemptLogin();
     }, delay);
     this.#loginRetryTimer.unref();
+  }
+
+  #needsBitrateReconfigure(): boolean {
+    const owned = this.#opusPipeline;
+    const connection = this.#connection;
+    const channel = this.#connectedChannel();
+    if (
+      !owned ||
+      !connection ||
+      !channel ||
+      !this.#isConnectionExpected(connection.generation) ||
+      connection.generation !== owned.connectionGeneration ||
+      connection.connection.state.status !== VoiceConnectionStatus.Ready
+    )
+      return false;
+    return owned.bitrate !== resolveDiscordOpusBitrate(this.#bitrateMode, channel.bitrate);
+  }
+
+  #scheduleBitrateRetry(): void {
+    if (this.#bitrateRetryTimer || this.#shuttingDown || !this.#needsBitrateReconfigure()) return;
+    const delay = retryDelay(
+      this.#bitrateRetryAttempt,
+      DISCORD_BITRATE_RETRY_BASE_MILLISECONDS,
+      DISCORD_BITRATE_RETRY_MAX_MILLISECONDS
+    );
+    this.#bitrateRetryAttempt += 1;
+    this.#bitrateRetryTimer = setTimeout(() => {
+      this.#bitrateRetryTimer = null;
+      if (this.#shuttingDown || !this.#needsBitrateReconfigure()) {
+        this.#clearBitrateRetry();
+        return;
+      }
+      const { completion } = this.#requestBitrateReconfigure();
+      void completion.then(
+        () => this.#clearBitrateRetry(),
+        (error) => {
+          this.#error =
+            error instanceof Error
+              ? `Discord audio bitrate: ${error.message}`
+              : 'Discord audio bitrate change failed.';
+          console.error(this.#error);
+          this.#scheduleBitrateRetry();
+        }
+      );
+    }, delay);
+    this.#bitrateRetryTimer.unref();
+  }
+
+  #clearBitrateRetry(): void {
+    if (this.#bitrateRetryTimer) clearTimeout(this.#bitrateRetryTimer);
+    this.#bitrateRetryTimer = null;
+    this.#bitrateRetryAttempt = 0;
   }
 
   #clearAudioRetry(): void {

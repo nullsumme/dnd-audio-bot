@@ -1,5 +1,6 @@
 import { getContext, setContext } from 'svelte';
 import { toast } from 'svelte-sonner';
+import type { DiscordBitrateMode } from '$lib/audio-quality';
 import type { ApplicationState, AssetRole, AudioAsset } from '$lib/types';
 
 const emptyState: ApplicationState = {
@@ -18,7 +19,10 @@ const emptyState: ApplicationState = {
     subscribed: false,
     audioDiagnostics: {
       encoder: 'ffmpeg/libopus',
-      bitrate: 64_000,
+      bitrateMode: 'auto',
+      bitrate: null,
+      channelBitrate: null,
+      bitrateReconfiguring: false,
       packetizationMilliseconds: 20,
       missedFrames: 0,
       fillerFrames: 0,
@@ -160,6 +164,18 @@ export class SoundkeepClient {
       'disconnect',
       () => this.request('/api/discord/disconnect', { method: 'POST', body: '{}' }),
       'Disconnected from Discord voice.'
+    );
+  }
+
+  async changeDiscordBitrate(mode: DiscordBitrateMode) {
+    return this.run(
+      'discord-bitrate',
+      () =>
+        this.request('/api/discord/bitrate', {
+          method: 'PATCH',
+          body: JSON.stringify({ mode })
+        }),
+      'Discord audio bitrate updated.'
     );
   }
 

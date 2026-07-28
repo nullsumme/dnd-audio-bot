@@ -28,8 +28,10 @@ Soundboard MP3 ─► bounded PCM cache┘          ▲
 ```
 
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
-encodes one 64 kbit/s constrained-VBR Opus stream with native FFmpeg, in-band forward error correction, and
-a single-frame 20 ms Ogg page that is flushed immediately before passing it to `@discordjs/voice`.
+encodes one dynamically selected constrained-VBR Opus stream with native FFmpeg, in-band forward error
+correction, and a single-frame 20 ms Ogg page that is flushed immediately before passing it to
+`@discordjs/voice`. Auto mode follows the connected channel up to 128 kbit/s; 64, 96, and 128 kbit/s
+presets are available in Settings and remain capped by Discord's channel bitrate.
 The two mixer lines receive fixed bus headroom, preventing hard-clipped peaks without changing the
 background gain when a sound effect starts or ends and without adding lookahead latency.
 Per-line PCM queues use low-latency high/low-watermark backpressure, pausing their FFmpeg decoder without
@@ -96,7 +98,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.4.4 \
+  --version 0.4.5 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -110,6 +112,7 @@ voice connection and one writable library volume.
 | Variable                    |                    Default | Purpose                                                      |
 | --------------------------- | -------------------------: | ------------------------------------------------------------ |
 | `DISCORD_BOT_TOKEN`         |                   required | Bot token from the Developer Portal                          |
+| `DISCORD_OPUS_BITRATE_MODE` |                     `auto` | Initial Opus mode: `auto`, `64000`, `96000`, or `128000`     |
 | `DATA_DIR`                  |                   `./data` | Library index and uploaded MP3 directory                     |
 | `FFMPEG_PATH`               |                   `ffmpeg` | FFmpeg executable                                            |
 | `FFPROBE_PATH`              |                  `ffprobe` | FFprobe executable                                           |
@@ -120,6 +123,9 @@ voice connection and one writable library volume.
 | `MAX_PCM_CACHE_BYTES`       |                 `67108864` | Aggregate in-memory cache for low-latency soundboard effects |
 | `MAX_PCM_CACHE_ENTRY_BYTES` |                 `33554432` | Per-effect decoded PCM cache limit                           |
 | `ORIGIN`                    | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
+
+Changing the bitrate in the dashboard persists the selected mode in `settings.json` on the data volume and
+overrides the initial environment/Helm default on subsequent starts.
 
 The application itself does not provide user accounts. Put it behind an authenticated reverse proxy when it
 is reachable by anyone other than trusted game masters.

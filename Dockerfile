@@ -31,6 +31,7 @@ ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
     BODY_SIZE_LIMIT=256M \
+    DISCORD_OPUS_BITRATE_MODE=auto \
     PROTOCOL_HEADER=x-forwarded-proto \
     HOST_HEADER=x-forwarded-host \
     DATA_DIR=/data \

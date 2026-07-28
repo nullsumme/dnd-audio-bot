@@ -7,7 +7,8 @@ import {
   VoiceConnectionStatus,
   type VoiceConnection
 } from '@discordjs/voice';
-import { ChannelType, type VoiceBasedChannel } from 'discord.js';
+import { ChannelType, Events, type VoiceBasedChannel } from 'discord.js';
+import type { DiscordBitrateMode } from '$lib/audio-quality';
 import type { DiscordOpusEncoderLifecycle } from './audio/encoder';
 
 const voiceMocks = vi.hoisted(() => ({
@@ -27,20 +28,25 @@ vi.mock('@discordjs/voice', async (importOriginal) => {
 import { PcmMixer } from './audio/mixer';
 import {
   DISCORD_AUDIO_RETRY_BASE_MILLISECONDS,
+  DISCORD_BITRATE_RETRY_BASE_MILLISECONDS,
   DISCORD_LOGIN_RETRY_BASE_MILLISECONDS,
   DISCORD_VOICE_RECOVERY_MILLISECONDS,
   DiscordService
 } from './discord';
 
 interface FakePipeline {
+  bitrate: number;
   lifecycle: DiscordOpusEncoderLifecycle;
+  stream: PassThrough;
   stop: ReturnType<typeof vi.fn<() => Promise<void>>>;
 }
 
-function channel(id: string, name: string): VoiceBasedChannel {
+function channel(id: string, name: string, bitrate = 96_000): VoiceBasedChannel {
   return {
     id,
     name,
+    bitrate,
+    rawPosition: 0,
     type: ChannelType.GuildVoice,
     guild: {
       id: `guild-${id}`,
@@ -78,21 +84,27 @@ describe('DiscordService audio lifecycle', () => {
   let service: DiscordService | null = null;
   let pipelines: FakePipeline[] = [];
 
-  function createService(token = ''): DiscordService {
+  function createService(token = '', bitrateMode: DiscordBitrateMode = 'auto'): DiscordService {
     mixer = new PcmMixer();
     pipelines = [];
     service = new DiscordService(
       mixer,
-      (_input, lifecycle) => {
-        const fake = { lifecycle, stop: vi.fn<() => Promise<void>>(async () => {}) };
+      (_input, bitrate, lifecycle) => {
+        const fake = {
+          bitrate,
+          lifecycle,
+          stream: new PassThrough({ objectMode: true }),
+          stop: vi.fn<() => Promise<void>>(async () => {})
+        };
         pipelines.push(fake);
         return {
-          stream: new PassThrough(),
+          stream: fake.stream,
           inputType: StreamType.Opus,
           stop: fake.stop
         };
       },
-      token
+      token,
+      bitrateMode
     );
     return service;
   }
@@ -135,14 +147,17 @@ describe('DiscordService audio lifecycle', () => {
     });
     service = new DiscordService(
       mixer!,
-      (_input, lifecycle) => {
+      (_input, bitrate, lifecycle) => {
         events.push('prepare encoder');
-        pipelines.push({
+        const pipeline = {
+          bitrate,
           lifecycle,
+          stream: new PassThrough({ objectMode: true }),
           stop: vi.fn<() => Promise<void>>(async () => {})
-        });
+        };
+        pipelines.push(pipeline);
         return {
-          stream: new PassThrough(),
+          stream: pipeline.stream,
           inputType: StreamType.Opus,
           stop: pipelines.at(-1)!.stop
         };
@@ -156,6 +171,243 @@ describe('DiscordService audio lifecycle', () => {
     await service.connect(voiceChannel.id);
 
     expect(events).toEqual(['voice ready', 'prepare encoder', 'subscribe player', 'player ready']);
+    expect(pipelines[0].bitrate).toBe(96_000);
+    expect(service.status().audioDiagnostics).toMatchObject({
+      bitrateMode: 'auto',
+      bitrate: 96_000,
+      channelBitrate: 96_000
+    });
+  });
+
+  it('warms and swaps a capped bitrate without reconnecting or resubscribing', async () => {
+    createService('', '64000');
+    const { connection, voiceChannel } = arrangeReadyConnection(
+      channel('123456789', 'Table', 96_000)
+    );
+    await service!.connect(voiceChannel.id);
+    expect(pipelines[0].bitrate).toBe(64_000);
+
+    let finished = false;
+    const changing = service!.setBitrateMode('auto').then(() => {
+      finished = true;
+    });
+    await vi.waitFor(() => expect(pipelines).toHaveLength(2));
+    expect(pipelines[1].bitrate).toBe(96_000);
+    pipelines[1].stream.write(Buffer.from([1]));
+    pipelines[1].stream.write(Buffer.from([2]));
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    expect(pipelines[0].stop).not.toHaveBeenCalled();
+
+    pipelines[1].stream.write(Buffer.from([3]));
+    await changing;
+
+    expect(voiceMocks.joinVoiceChannel).toHaveBeenCalledOnce();
+    expect(connection.subscribe).toHaveBeenCalledOnce();
+    expect(pipelines[0].stop).toHaveBeenCalledOnce();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: 'auto',
+      bitrate: 96_000,
+      channelBitrate: 96_000,
+      bitrateReconfiguring: false
+    });
+  });
+
+  it('keeps the active encoder and rolls back the mode when candidate warm-up fails', async () => {
+    createService('', '64000');
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 128_000));
+    await service!.connect(voiceChannel.id);
+
+    const changing = service!.setBitrateMode('128000');
+    await vi.waitFor(() => expect(pipelines).toHaveLength(2));
+    pipelines[1].lifecycle.onError('candidate failed');
+
+    await expect(changing).rejects.toThrow('candidate failed');
+    expect(pipelines[0].stop).not.toHaveBeenCalled();
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: '64000',
+      bitrate: 64_000
+    });
+  });
+
+  it('rejects and recovers when Discord does not accept a promoted encoder', async () => {
+    vi.useFakeTimers();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createService('', '64000');
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 128_000));
+    await service!.connect(voiceChannel.id);
+    voiceMocks.entersState.mockRejectedValueOnce(new Error('player promotion failed'));
+
+    const changing = service!.setBitrateMode('128000');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipelines).toHaveLength(2);
+    pipelines[1].stream.write(Buffer.from([1]));
+    pipelines[1].stream.write(Buffer.from([2]));
+    pipelines[1].stream.write(Buffer.from([3]));
+
+    await expect(changing).rejects.toThrow('player promotion failed');
+
+    expect(pipelines[0].stop).toHaveBeenCalledOnce();
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: '64000',
+      bitrate: null,
+      bitrateReconfiguring: false
+    });
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('player promotion failed'));
+  });
+
+  it('waits for a warming candidate to stop exactly once before reconnecting after disconnect', async () => {
+    createService('', '64000');
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'First table', 128_000));
+    await service!.connect(voiceChannel.id);
+
+    const changing = service!.setBitrateMode('128000');
+    await vi.waitFor(() => expect(pipelines).toHaveLength(2));
+    const candidateStopped = deferred<void>();
+    pipelines[1].stop.mockImplementation(() => candidateStopped.promise);
+
+    service!.disconnect();
+    await vi.waitFor(() => expect(pipelines[1].stop).toHaveBeenCalledOnce());
+
+    const nextChannel = channel('987654321', 'Second table', 96_000);
+    const nextConnection = voiceConnection(nextChannel);
+    vi.mocked(service!.client.channels.fetch).mockResolvedValue(nextChannel);
+    service!.client.channels.cache.set(nextChannel.id, nextChannel);
+    voiceMocks.joinVoiceChannel.mockReturnValue(nextConnection);
+    let reconnectFinished = false;
+    const reconnecting = service!.connect(nextChannel.id).then(() => {
+      reconnectFinished = true;
+    });
+
+    await Promise.resolve();
+    expect(voiceMocks.joinVoiceChannel).toHaveBeenCalledOnce();
+    expect(reconnectFinished).toBe(false);
+
+    candidateStopped.resolve();
+    await Promise.all([changing, reconnecting]);
+
+    expect(voiceMocks.joinVoiceChannel).toHaveBeenCalledTimes(2);
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(reconnectFinished).toBe(true);
+  });
+
+  it('waits for a warming candidate to stop exactly once during shutdown', async () => {
+    createService('', '64000');
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 128_000));
+    await service!.connect(voiceChannel.id);
+
+    const changing = service!.setBitrateMode('128000');
+    await vi.waitFor(() => expect(pipelines).toHaveLength(2));
+    const candidateStopped = deferred<void>();
+    pipelines[1].stop.mockImplementation(() => candidateStopped.promise);
+    let shutdownFinished = false;
+
+    const shutdown = service!.shutdown().then(() => {
+      shutdownFinished = true;
+    });
+    await vi.waitFor(() => expect(pipelines[1].stop).toHaveBeenCalledOnce());
+    expect(shutdownFinished).toBe(false);
+
+    candidateStopped.resolve();
+    await Promise.all([changing, shutdown]);
+
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(shutdownFinished).toBe(true);
+  });
+
+  it('retries a failed automatic channel bitrate swap and converges', async () => {
+    vi.useFakeTimers();
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createService();
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 128_000));
+    await service!.connect(voiceChannel.id);
+    expect(pipelines[0].bitrate).toBe(128_000);
+
+    const updatedChannel = channel(voiceChannel.id, voiceChannel.name, 64_000);
+    service!.client.channels.cache.set(updatedChannel.id, updatedChannel);
+    service!.client.emit(Events.ChannelUpdate, voiceChannel, updatedChannel);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipelines).toHaveLength(2);
+    expect(pipelines[1].bitrate).toBe(64_000);
+
+    pipelines[1].lifecycle.onError('candidate failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrate: 128_000,
+      channelBitrate: 64_000,
+      bitrateReconfiguring: true
+    });
+
+    await vi.advanceTimersByTimeAsync(DISCORD_BITRATE_RETRY_BASE_MILLISECONDS);
+    expect(pipelines).toHaveLength(3);
+    expect(pipelines[2].bitrate).toBe(64_000);
+
+    pipelines[2].stream.write(Buffer.from([1]));
+    pipelines[2].stream.write(Buffer.from([2]));
+    pipelines[2].stream.write(Buffer.from([3]));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pipelines[0].stop).toHaveBeenCalledOnce();
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(pipelines[2].stop).not.toHaveBeenCalled();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: 'auto',
+      bitrate: 64_000,
+      channelBitrate: 64_000,
+      bitrateReconfiguring: false
+    });
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('candidate failed'));
+  });
+
+  it('converges on the latest channel cap when it changes during a manual warm-up', async () => {
+    createService('', '64000');
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 128_000));
+    await service!.connect(voiceChannel.id);
+
+    const changing = service!.setBitrateMode('128000');
+    await vi.waitFor(() => expect(pipelines).toHaveLength(2));
+    expect(pipelines[1].bitrate).toBe(128_000);
+
+    const updatedChannel = channel(voiceChannel.id, voiceChannel.name, 96_000);
+    service!.client.channels.cache.set(updatedChannel.id, updatedChannel);
+    service!.client.emit(Events.ChannelUpdate, voiceChannel, updatedChannel);
+
+    await vi.waitFor(() => expect(pipelines).toHaveLength(3));
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(pipelines[2].bitrate).toBe(96_000);
+    pipelines[2].stream.write(Buffer.from([1]));
+    pipelines[2].stream.write(Buffer.from([2]));
+    pipelines[2].stream.write(Buffer.from([3]));
+
+    await changing;
+
+    expect(pipelines[0].stop).toHaveBeenCalledOnce();
+    expect(pipelines[1].stop).toHaveBeenCalledOnce();
+    expect(pipelines[2].stop).not.toHaveBeenCalled();
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: '128000',
+      bitrate: 96_000,
+      channelBitrate: 96_000,
+      bitrateReconfiguring: false
+    });
+  });
+
+  it('updates the selected mode without rebuilding when the channel cap keeps the rate equal', async () => {
+    createService();
+    const { voiceChannel } = arrangeReadyConnection(channel('123456789', 'Table', 96_000));
+    await service!.connect(voiceChannel.id);
+
+    await service!.setBitrateMode('128000');
+
+    expect(pipelines).toHaveLength(1);
+    expect(service!.status().audioDiagnostics).toMatchObject({
+      bitrateMode: '128000',
+      bitrate: 96_000,
+      channelBitrate: 96_000
+    });
   });
 
   it('recovers a clean encoder exit once and ignores stale lifecycle callbacks', async () => {

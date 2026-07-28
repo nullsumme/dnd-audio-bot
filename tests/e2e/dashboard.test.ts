@@ -75,4 +75,68 @@ test('supports the desktop dashboard navigation and audio workflow', async ({ pa
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   await expect(page.getByText('Master output')).toBeVisible();
+
+  const settingsState = (await (await page.request.get('/api/state')).json()) as {
+    discord: {
+      audioDiagnostics: {
+        bitrateMode: 'auto' | '64000' | '96000' | '128000';
+      };
+    };
+  };
+  const originalBitrateMode = settingsState.discord.audioDiagnostics.bitrateMode;
+  const targetBitrateMode = originalBitrateMode === '96000' ? '64000' : '96000';
+  const targetLabel = targetBitrateMode === '96000' ? '96 kbps' : '64 kbps';
+  const qualityCard = page
+    .locator('[data-slot="card"]')
+    .filter({ has: page.getByRole('heading', { name: 'Discord audio quality' }) });
+  const originalLabel =
+    originalBitrateMode === 'auto'
+      ? 'Auto'
+      : `${Math.round(Number(originalBitrateMode) / 1_000)} kbps`;
+  let bitrateChanged = false;
+  try {
+    const targetRadio = qualityCard.getByRole('radio', { name: targetLabel, exact: true });
+    await targetRadio.click();
+    await expect(targetRadio).toBeChecked();
+    const applyResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith('/api/discord/bitrate') && response.request().method() === 'PATCH'
+    );
+    await qualityCard.getByRole('button', { name: 'Apply bitrate' }).click();
+    expect((await applyResponse).ok()).toBe(true);
+    bitrateChanged = true;
+    await expect(qualityCard).toContainText('Configured');
+    await expect(qualityCard).toContainText('Current output');
+    await expect(qualityCard).toContainText('Inactive');
+
+    const updatedState = (await (await page.request.get('/api/state')).json()) as {
+      discord: {
+        audioDiagnostics: {
+          bitrateMode: string;
+          bitrate: number | null;
+          channelBitrate: number | null;
+        };
+      };
+    };
+    expect(updatedState.discord.audioDiagnostics).toMatchObject({
+      bitrateMode: targetBitrateMode,
+      bitrate: null,
+      channelBitrate: null
+    });
+  } finally {
+    if (bitrateChanged) {
+      const originalRadio = qualityCard.getByRole('radio', {
+        name: originalLabel,
+        exact: true
+      });
+      await originalRadio.click();
+      await expect(originalRadio).toBeChecked();
+      const restoreResponse = page.waitForResponse(
+        (response) =>
+          response.url().endsWith('/api/discord/bitrate') && response.request().method() === 'PATCH'
+      );
+      await qualityCard.getByRole('button', { name: 'Apply bitrate' }).click();
+      expect((await restoreResponse).ok()).toBe(true);
+    }
+  }
 });
