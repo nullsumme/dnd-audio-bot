@@ -21,8 +21,8 @@
     'hover:bg-muted flex w-full min-h-(--row-h) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors';
 </script>
 
-<Card.Root class="flex min-w-0 flex-col">
-  <Card.Header class="flex-row items-center justify-between gap-2 pb-2">
+<Card.Root class="flex min-w-0 shrink-0 flex-col">
+  <Card.Header class="shrink-0 flex-row items-center justify-between gap-2 pb-2">
     <Card.Title class="flex items-center gap-2 text-sm tracking-wide uppercase">
       <Layers3 class="size-4" />
       Scenes
@@ -31,7 +31,7 @@
       <Plus />
     </Button>
   </Card.Header>
-  <Card.Content class="flex flex-col gap-0.5 pb-3">
+  <Card.Content class="flex max-h-64 flex-col gap-0.5 overflow-y-auto pb-3">
     <button
       type="button"
       class={cn(

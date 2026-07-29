@@ -62,9 +62,9 @@
           />
         </InputGroup.Root>
         <Select.Root type="single" bind:value={placement}>
-          <Select.Trigger aria-label="Filter library by placement" class="h-8 w-full sm:w-40">
+          <Select.Trigger aria-label="Filter library by placement" class="h-8 w-full sm:w-44">
             <ListFilter />
-            <span>{placementLabel}</span>
+            <span class="truncate">{placementLabel}</span>
           </Select.Trigger>
           <Select.Content>
             <Select.Group>

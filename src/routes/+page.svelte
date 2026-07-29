@@ -49,9 +49,9 @@
   </div>
 
   <div
-    class="grid min-w-0 flex-1 grid-cols-1 items-start gap-3 p-3 md:p-4 xl:grid-cols-[14rem_minmax(0,1fr)_17rem]"
+    class="grid min-w-0 flex-1 grid-cols-1 gap-3 p-3 md:p-4 xl:min-h-0 xl:grid-cols-[16rem_minmax(0,1fr)_17rem] xl:grid-rows-[minmax(0,1fr)]"
   >
-    <div class="flex min-w-0 flex-col gap-3">
+    <div class="flex min-w-0 flex-col gap-3 xl:min-h-0">
       <SceneList
         oncreate={() => openEditor(null)}
         onedit={(scene) => openEditor(scene)}
@@ -62,7 +62,7 @@
 
     <SoundboardGrid />
 
-    <div class="flex min-w-0 flex-col gap-3">
+    <div class="flex min-w-0 flex-col gap-3 xl:min-h-0">
       <OutputPanel />
       <ActivityFeed />
     </div>

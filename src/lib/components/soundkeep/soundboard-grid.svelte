@@ -33,7 +33,7 @@
 </script>
 
 <Card.Root class="flex min-w-0 flex-col">
-  <Card.Header class="flex-row items-start justify-between gap-3 pb-2">
+  <Card.Header class="shrink-0 flex-row items-start justify-between gap-3 pb-2">
     <div class="min-w-0">
       <Card.Title class="flex items-center gap-2 text-base">
         <WandSparkles class="size-4" />
@@ -60,7 +60,7 @@
     </div>
   </Card.Header>
 
-  <Card.Content class="flex min-w-0 flex-1 flex-col">
+  <Card.Content class="flex min-h-0 min-w-0 flex-1 flex-col">
     {#if soundkeep.visibleSoundboardAssets.length === 0}
       <Empty.Root class="flex-1">
         <Empty.Header>
@@ -78,8 +78,8 @@
         </Empty.Content>
       </Empty.Root>
     {:else}
-      <Tabs.Root bind:value={selectedCategory} class="min-w-0 flex-1">
-        <div class="w-full min-w-0 overflow-x-auto pb-1">
+      <Tabs.Root bind:value={selectedCategory} class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div class="w-full min-w-0 shrink-0 overflow-x-auto pb-1">
           <Tabs.List variant="line">
             <Tabs.Trigger value="all">
               All sounds
@@ -98,7 +98,10 @@
         </div>
 
         {#key selectedCategory}
-          <Tabs.Content value={selectedCategory} class="min-w-0 pt-2.5">
+          <Tabs.Content
+            value={selectedCategory}
+            class="min-h-0 min-w-0 flex-1 overflow-y-auto pt-2.5 pr-1"
+          >
             <div
               class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
             >

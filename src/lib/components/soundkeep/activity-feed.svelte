@@ -14,18 +14,18 @@
   }
 </script>
 
-<Card.Root class="flex min-w-0 flex-col">
-  <Card.Header class="pb-2">
+<Card.Root class="flex min-w-0 flex-col xl:min-h-0 xl:flex-1">
+  <Card.Header class="shrink-0 pb-2">
     <Card.Title class="flex items-center gap-2 text-sm tracking-wide uppercase">
       <Activity class="size-4" />
       Activity
     </Card.Title>
   </Card.Header>
-  <Card.Content class="pb-3">
+  <Card.Content class="flex min-h-0 flex-1 flex-col pb-3">
     {#if soundkeep.state.activity.length === 0}
       <p class="metric-label py-3 text-center">No session activity yet.</p>
     {:else}
-      <ScrollArea.Root class="h-56">
+      <ScrollArea.Root class="min-h-40 flex-1">
         <div class="flex flex-col pr-2">
           {#each soundkeep.state.activity as entry (entry.id)}
             <div class="border-border/40 flex items-start gap-2 border-b py-1.5 last:border-b-0">

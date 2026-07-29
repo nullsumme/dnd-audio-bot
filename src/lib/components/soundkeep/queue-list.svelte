@@ -35,16 +35,16 @@
   }
 </script>
 
-<Card.Root class="flex min-w-0 flex-col">
-  <Card.Header class="flex-row items-center justify-between gap-2 pb-2">
+<Card.Root class="flex min-w-0 flex-col xl:min-h-0 xl:flex-1">
+  <Card.Header class="shrink-0 flex-row items-center justify-between gap-2 pb-2">
     <Card.Title class="flex items-center gap-2 text-sm tracking-wide uppercase">
       <ListMusic class="size-4" />
       Queue
     </Card.Title>
     <Badge variant="outline">{soundkeep.visibleBackgroundAssets.length}</Badge>
   </Card.Header>
-  <Card.Content class="flex min-w-0 flex-col gap-2 pb-3">
-    <div class="flex min-w-0 gap-1.5">
+  <Card.Content class="flex min-h-0 min-w-0 flex-1 flex-col gap-2 pb-3">
+    <div class="flex min-w-0 shrink-0 gap-1.5">
       <Select.Root type="single" bind:value={selected}>
         <Select.Trigger
           id="background-select"
@@ -81,7 +81,7 @@
         No background tracks in this scene.
       </p>
     {:else}
-      <ScrollArea.Root class="h-64">
+      <ScrollArea.Root class="min-h-40 flex-1">
         <div class="flex flex-col gap-0.5 pr-2">
           {#each soundkeep.visibleBackgroundAssets as asset (asset.id)}
             {@const active = soundkeep.backgroundSource?.assetId === asset.id}
