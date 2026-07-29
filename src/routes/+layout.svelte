@@ -259,7 +259,26 @@
           <Skeleton class="h-[420px] w-full rounded-xl" />
         </div>
       {:else}
-        {#if soundkeep.setupNeedsAttention}
+        {#if soundkeep.stateError}
+          <div class="px-4 pt-4 md:px-6 md:pt-6">
+            <Alert.Root variant="destructive">
+              <Bot />
+              <Alert.Title>Live state unavailable</Alert.Title>
+              <Alert.Description>{soundkeep.stateError}</Alert.Description>
+              <Alert.Action>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={soundkeep.refreshing}
+                  onclick={() => soundkeep.refresh(false)}
+                >
+                  <RefreshCw data-icon="inline-start" />
+                  Retry
+                </Button>
+              </Alert.Action>
+            </Alert.Root>
+          </div>
+        {:else if soundkeep.setupNeedsAttention}
           <div class="px-4 pt-4 md:px-6 md:pt-6">
             <Alert.Root variant={!soundkeep.state.discord.configured ? 'destructive' : 'default'}>
               <Bot />

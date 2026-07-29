@@ -34,7 +34,6 @@ export class ApplicationRuntime {
 
   async snapshot(): Promise<ApplicationState> {
     await this.initialize();
-    const playback = await this.playback.reconcile();
     return {
       discord: this.discord.status(),
       guilds: this.discord.guilds(),
@@ -42,7 +41,7 @@ export class ApplicationRuntime {
       assets: this.library.list(),
       scenes: this.scenes.list(),
       activity: this.activity.snapshot(),
-      playback,
+      playback: this.playback.snapshot(),
       masterVolume: this.engine.masterVolume,
       pcmCache: this.pcmCache.status(),
       capabilities: { ...this.capabilities }

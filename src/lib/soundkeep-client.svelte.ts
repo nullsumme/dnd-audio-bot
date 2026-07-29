@@ -72,10 +72,41 @@ const emptyState: ApplicationState = {
   capabilities: { ffmpeg: false, ffprobe: false }
 };
 
+export const STATE_REFRESH_TIMEOUT_MILLISECONDS = 8_000;
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'AbortError') {
+    return 'The live state request timed out. Soundkeep will keep retrying.';
+  }
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
+function isApplicationState(value: unknown): value is ApplicationState {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Partial<ApplicationState>;
+  return (
+    typeof candidate.discord === 'object' &&
+    candidate.discord !== null &&
+    Array.isArray(candidate.guilds) &&
+    Array.isArray(candidate.sources) &&
+    Array.isArray(candidate.assets) &&
+    Array.isArray(candidate.scenes) &&
+    Array.isArray(candidate.activity) &&
+    typeof candidate.playback === 'object' &&
+    candidate.playback !== null &&
+    typeof candidate.masterVolume === 'number' &&
+    typeof candidate.pcmCache === 'object' &&
+    candidate.pcmCache !== null &&
+    typeof candidate.capabilities === 'object' &&
+    candidate.capabilities !== null
+  );
+}
+
 export class SoundkeepClient {
   state = $state<ApplicationState>(emptyState);
   initialLoading = $state(true);
   refreshing = $state(false);
+  stateError = $state<string | null>(null);
   busy = $state<string | null>(null);
 
   #interval: number | null = null;
@@ -145,14 +176,25 @@ export class SoundkeepClient {
   }
 
   async request<T>(url: string, init?: RequestInit): Promise<T> {
+    const hasJsonBody = init?.body !== undefined && !(init.body instanceof FormData);
     const response = await fetch(url, {
       ...init,
-      headers:
-        init?.body instanceof FormData
-          ? init.headers
-          : { 'content-type': 'application/json', ...init?.headers }
+      headers: hasJsonBody
+        ? { 'content-type': 'application/json', ...init?.headers }
+        : init?.headers
     });
-    const body = (await response.json().catch(() => ({}))) as T & { message?: string };
+
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+    if (!contentType.includes('application/json')) {
+      if (response.redirected) {
+        throw new Error('Authentication is required. Reload Soundkeep and sign in again.');
+      }
+      throw new Error(`Soundkeep returned an unexpected ${contentType || 'non-JSON'} response.`);
+    }
+
+    const body = (await response.json().catch(() => {
+      throw new Error('Soundkeep returned invalid JSON.');
+    })) as T & { message?: string };
     if (!response.ok) throw new Error(body.message || `Request failed with ${response.status}.`);
     return body;
   }
@@ -160,11 +202,19 @@ export class SoundkeepClient {
   async refresh(firstLoad = false) {
     if (this.refreshing) return;
     this.refreshing = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), STATE_REFRESH_TIMEOUT_MILLISECONDS);
     try {
-      this.state = await this.request<ApplicationState>('/api/state');
+      const state = await this.request<unknown>('/api/state', { signal: controller.signal });
+      if (!isApplicationState(state))
+        throw new Error('Soundkeep returned an invalid state response.');
+      this.state = state;
+      this.stateError = null;
     } catch (error) {
-      if (firstLoad) this.showError(error);
+      this.stateError = errorMessage(error);
+      if (firstLoad) this.showError(new Error(this.stateError));
     } finally {
+      clearTimeout(timeout);
       this.refreshing = false;
       if (firstLoad) this.initialLoading = false;
     }
@@ -186,7 +236,7 @@ export class SoundkeepClient {
   }
 
   showError(error: unknown) {
-    toast.error(error instanceof Error ? error.message : 'Something went wrong.');
+    toast.error(errorMessage(error));
   }
 
   async connect(channelId: string) {

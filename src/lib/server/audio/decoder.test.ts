@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 interface FakeChild extends EventEmitter {
   stdin: PassThrough;
@@ -38,13 +38,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   };
 });
 
-import { spawnDecoder } from './decoder';
+import { DECODER_STOP_TIMEOUT_MILLISECONDS, spawnDecoder } from './decoder';
 
 describe('spawnDecoder local MP3 playback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fakes.children.length = 0;
     fakes.args.length = 0;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('uses bounded probing and single-thread decoding without wall-clock throttling', () => {
@@ -153,5 +157,50 @@ describe('spawnDecoder local MP3 playback', () => {
     expect(callbacks.onData.mock.calls.map(([chunk]) => chunk.length)).toEqual([
       3_840, 3_840, 1_234
     ]);
+  });
+
+  it('settles an explicit stop on process exit without waiting for backpressured stdout close', async () => {
+    const callbacks = {
+      onData: vi.fn(() => false),
+      onPlaying: vi.fn(),
+      onEnd: vi.fn()
+    };
+    const decoder = spawnDecoder({ path: '/data/tavern.mp3', loop: true }, callbacks);
+    const [ffmpeg] = fakes.children;
+
+    ffmpeg.stdout.write(Buffer.alloc(3_840 * 2));
+    await vi.waitFor(() => expect(callbacks.onData).toHaveBeenCalledTimes(1));
+    ffmpeg.kill.mockImplementationOnce(() => {
+      ffmpeg.killed = true;
+      ffmpeg.exitCode = 0;
+      queueMicrotask(() => ffmpeg.emit('exit', 0, null));
+      return true;
+    });
+
+    await expect(decoder.stop()).resolves.toBeUndefined();
+    expect(ffmpeg.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(ffmpeg.stdout.listenerCount('readable')).toBe(0);
+    expect(callbacks.onData).toHaveBeenCalledTimes(1);
+    expect(callbacks.onEnd).not.toHaveBeenCalled();
+  });
+
+  it('bounds explicit stop when the child emits neither exit nor close', async () => {
+    vi.useFakeTimers();
+    const decoder = spawnDecoder(
+      { path: '/data/tavern.mp3', loop: true },
+      {
+        onData: () => false,
+        onPlaying() {},
+        onEnd() {}
+      }
+    );
+    const [ffmpeg] = fakes.children;
+
+    const stopping = decoder.stop();
+    await vi.advanceTimersByTimeAsync(DECODER_STOP_TIMEOUT_MILLISECONDS);
+
+    await expect(stopping).resolves.toBeUndefined();
+    expect(ffmpeg.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(ffmpeg.kill).toHaveBeenCalledWith('SIGKILL');
   });
 });

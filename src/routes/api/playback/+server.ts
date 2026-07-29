@@ -31,8 +31,10 @@ export function _parsePlaybackPatch(value: unknown): PlaybackUpdate {
 
 export async function GET() {
   await runtime.initialize();
-  const playback = await runtime.playback.reconcile();
-  return json({ playback }, { headers: { 'cache-control': 'no-store' } });
+  return json(
+    { playback: runtime.playback.snapshot() },
+    { headers: { 'cache-control': 'no-store' } }
+  );
 }
 
 export async function PATCH({ request }: { request: Request }) {
