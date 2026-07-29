@@ -35,7 +35,7 @@ Soundboard MP3 ─► bounded PCM cache┘          ▲
 Each line is decoded to signed 16-bit, 48 kHz stereo PCM. Soundkeep mixes the frames in-process and
 encodes one dynamically selected constrained-VBR Opus stream with native FFmpeg, in-band forward error
 correction, and a single-frame 20 ms Ogg page that is flushed immediately before passing it to
-`@discordjs/voice`. Auto mode follows the connected channel up to 128 kbit/s; 64, 96, and 128 kbit/s
+`@discordjs/voice`. Auto mode follows the connected channel up to 384 kbit/s; 64, 96, 128, and 384 kbit/s
 presets are available in Settings and remain capped by Discord's channel bitrate.
 The two mixer lines receive fixed bus headroom, preventing hard-clipped peaks without changing the
 background gain when a sound effect starts or ends and without adding lookahead latency.
@@ -106,7 +106,7 @@ Then install the OCI chart:
 
 ```bash
 helm install soundkeep oci://ghcr.io/nullsumme/charts/dnd-audio-bot \
-  --version 0.6.0 \
+  --version 0.7.0 \
   --namespace dnd-audio-bot \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=soundkeep.example.com
@@ -117,22 +117,22 @@ voice connection and one writable library volume.
 
 ## Configuration
 
-| Variable                    |                    Default | Purpose                                                      |
-| --------------------------- | -------------------------: | ------------------------------------------------------------ |
-| `DISCORD_BOT_TOKEN`         |                   required | Bot token from the Developer Portal                          |
-| `DISCORD_OPUS_BITRATE_MODE` |                     `auto` | Initial Opus mode: `auto`, `64000`, `96000`, or `128000`     |
-| `DATA_DIR`                  |                   `./data` | Library index and uploaded MP3 directory                     |
-| `FFMPEG_PATH`               |                   `ffmpeg` | FFmpeg executable                                            |
-| `FFPROBE_PATH`              |                  `ffprobe` | FFprobe executable                                           |
-| `MAX_UPLOAD_BYTES`          |                `262144000` | Per-file MP3 upload limit                                    |
-| `MAX_ARTWORK_BYTES`         |                  `5242880` | Per-file PNG/JPEG artwork upload limit                       |
-| `MAX_LIBRARY_BYTES`         |               `8589934592` | Total managed-library quota                                  |
-| `MIN_FREE_BYTES`            |                `268435456` | Free-space reserve maintained on the data volume             |
-| `MAX_CONCURRENT_UPLOADS`    |                        `1` | Concurrent streamed upload/validation jobs                   |
-| `MAX_PCM_CACHE_BYTES`       |                 `67108864` | Aggregate in-memory cache for low-latency soundboard effects |
-| `MAX_PCM_CACHE_ENTRY_BYTES` |                 `33554432` | Per-effect decoded PCM cache limit                           |
-| `ACTIVITY_LOG_CAPACITY`     |                      `100` | In-memory recent server events retained for the dashboard    |
-| `ORIGIN`                    | derived from proxy headers | Public origin for direct deployments without a reverse proxy |
+| Variable                    |                    Default | Purpose                                                            |
+| --------------------------- | -------------------------: | ------------------------------------------------------------------ |
+| `DISCORD_BOT_TOKEN`         |                   required | Bot token from the Developer Portal                                |
+| `DISCORD_OPUS_BITRATE_MODE` |                     `auto` | Initial Opus mode: `auto`, `64000`, `96000`, `128000`, or `384000` |
+| `DATA_DIR`                  |                   `./data` | Library index and uploaded MP3 directory                           |
+| `FFMPEG_PATH`               |                   `ffmpeg` | FFmpeg executable                                                  |
+| `FFPROBE_PATH`              |                  `ffprobe` | FFprobe executable                                                 |
+| `MAX_UPLOAD_BYTES`          |                `262144000` | Per-file MP3 upload limit                                          |
+| `MAX_ARTWORK_BYTES`         |                  `5242880` | Per-file PNG/JPEG artwork upload limit                             |
+| `MAX_LIBRARY_BYTES`         |               `8589934592` | Total managed-library quota                                        |
+| `MIN_FREE_BYTES`            |                `268435456` | Free-space reserve maintained on the data volume                   |
+| `MAX_CONCURRENT_UPLOADS`    |                        `1` | Concurrent streamed upload/validation jobs                         |
+| `MAX_PCM_CACHE_BYTES`       |                 `67108864` | Aggregate in-memory cache for low-latency soundboard effects       |
+| `MAX_PCM_CACHE_ENTRY_BYTES` |                 `33554432` | Per-effect decoded PCM cache limit                                 |
+| `ACTIVITY_LOG_CAPACITY`     |                      `100` | In-memory recent server events retained for the dashboard          |
+| `ORIGIN`                    | derived from proxy headers | Public origin for direct deployments without a reverse proxy       |
 
 Changing the bitrate in the dashboard persists the selected mode in `settings.json` on the data volume and
 overrides the initial environment/Helm default on subsequent starts.

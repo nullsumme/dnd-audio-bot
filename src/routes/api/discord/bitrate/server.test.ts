@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { _parseDiscordBitrateMode } from './+server';
+import { _formatDiscordBitrateMode, _parseDiscordBitrateMode } from './+server';
 
 describe('Discord bitrate requests', () => {
-  it('accepts exactly Auto and the three supported presets', () => {
-    for (const mode of ['auto', '64000', '96000', '128000']) {
+  it('accepts exactly Auto and the four supported presets', () => {
+    for (const mode of ['auto', '64000', '96000', '128000', '384000']) {
       expect(_parseDiscordBitrateMode({ mode })).toBe(mode);
     }
   });
@@ -18,5 +18,10 @@ describe('Discord bitrate requests', () => {
     ]) {
       expect(() => _parseDiscordBitrateMode(body)).toThrow();
     }
+  });
+
+  it('formats persisted bps modes as human-readable kbps activity', () => {
+    expect(_formatDiscordBitrateMode('auto')).toBe('automatic');
+    expect(_formatDiscordBitrateMode('384000')).toBe('384 kbps');
   });
 });

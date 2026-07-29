@@ -79,13 +79,13 @@ test('supports the desktop dashboard navigation and audio workflow', async ({ pa
   const settingsState = (await (await page.request.get('/api/state')).json()) as {
     discord: {
       audioDiagnostics: {
-        bitrateMode: 'auto' | '64000' | '96000' | '128000';
+        bitrateMode: 'auto' | '64000' | '96000' | '128000' | '384000';
       };
     };
   };
   const originalBitrateMode = settingsState.discord.audioDiagnostics.bitrateMode;
-  const targetBitrateMode = originalBitrateMode === '96000' ? '64000' : '96000';
-  const targetLabel = targetBitrateMode === '96000' ? '96 kbps' : '64 kbps';
+  const targetBitrateMode = originalBitrateMode === '384000' ? '96000' : '384000';
+  const targetLabel = `${Math.round(Number(targetBitrateMode) / 1_000)} kbps`;
   const qualityCard = page
     .locator('[data-slot="card"]')
     .filter({ has: page.getByRole('heading', { name: 'Discord audio quality' }) });
@@ -95,6 +95,7 @@ test('supports the desktop dashboard navigation and audio workflow', async ({ pa
       : `${Math.round(Number(originalBitrateMode) / 1_000)} kbps`;
   let bitrateChanged = false;
   try {
+    await expect(qualityCard.getByRole('radio', { name: '384 kbps', exact: true })).toBeVisible();
     const targetRadio = qualityCard.getByRole('radio', { name: targetLabel, exact: true });
     await targetRadio.click();
     await expect(targetRadio).toBeChecked();

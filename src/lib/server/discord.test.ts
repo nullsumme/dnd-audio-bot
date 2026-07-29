@@ -158,7 +158,9 @@ describe('DiscordService audio lifecycle', () => {
   it('waits for a playable voice socket before starting and subscribing the encoder', async () => {
     const events: string[] = [];
     createService();
-    const { connection, voiceChannel } = arrangeReadyConnection();
+    const { connection, voiceChannel } = arrangeReadyConnection(
+      channel('123456789', 'Table', 384_000)
+    );
     voiceMocks.entersState.mockImplementation(async (target: unknown) => {
       events.push(target === connection ? 'voice ready' : 'player ready');
       return target;
@@ -193,11 +195,11 @@ describe('DiscordService audio lifecycle', () => {
     await service.connect(voiceChannel.id);
 
     expect(events).toEqual(['voice ready', 'prepare encoder', 'subscribe player', 'player ready']);
-    expect(pipelines[0].bitrate).toBe(96_000);
+    expect(pipelines[0].bitrate).toBe(384_000);
     expect(service.status().audioDiagnostics).toMatchObject({
       bitrateMode: 'auto',
-      bitrate: 96_000,
-      channelBitrate: 96_000
+      bitrate: 384_000,
+      channelBitrate: 384_000
     });
   });
 

@@ -69,9 +69,10 @@
           <ToggleGroup.Item value="64000" class="flex-1">64 kbps</ToggleGroup.Item>
           <ToggleGroup.Item value="96000" class="flex-1">96 kbps</ToggleGroup.Item>
           <ToggleGroup.Item value="128000" class="flex-1">128 kbps</ToggleGroup.Item>
+          <ToggleGroup.Item value="384000" class="flex-1">384 kbps</ToggleGroup.Item>
         </ToggleGroup.Root>
         <Field.Description class="text-micro">
-          Auto uses the Discord channel limit up to 128 kbps. Fixed choices are also capped by the
+          Auto uses the Discord channel limit up to 384 kbps. Fixed choices are also capped by the
           channel.
         </Field.Description>
       </Field.Field>

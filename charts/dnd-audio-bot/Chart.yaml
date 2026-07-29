@@ -2,8 +2,8 @@ apiVersion: v2
 name: dnd-audio-bot
 description: A self-hosted Discord ambience mixer and soundboard for tabletop sessions.
 type: application
-version: 0.6.0
-appVersion: '0.6.0'
+version: 0.7.0
+appVersion: '0.7.0'
 home: https://github.com/nullsumme/dnd-audio-bot
 sources:
   - https://github.com/nullsumme/dnd-audio-bot

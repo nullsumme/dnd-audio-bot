@@ -45,7 +45,7 @@ describe('Discord Opus encoder', () => {
 
   it('emits and flushes one low-delay Opus packet per Discord frame', () => {
     expect(DISCORD_OPUS_PAGE_MILLISECONDS).toBe(20);
-    for (const bitrate of [64_000, 96_000, 128_000]) {
+    for (const bitrate of [64_000, 96_000, 128_000, 384_000]) {
       expect(buildDiscordOpusArgs(bitrate)).toEqual(
         expect.arrayContaining([
           '-b:a',
@@ -64,7 +64,7 @@ describe('Discord Opus encoder', () => {
       );
     }
     expect(() => buildDiscordOpusArgs(7_999)).toThrow(RangeError);
-    expect(() => buildDiscordOpusArgs(128_001)).toThrow(RangeError);
+    expect(() => buildDiscordOpusArgs(384_001)).toThrow(RangeError);
   });
 
   it('reports clean and failed unexpected exits', () => {

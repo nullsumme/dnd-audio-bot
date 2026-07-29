@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { DiscordBitrateMode } from '$lib/audio-quality';
 import { ApplicationSettingsStore } from './settings';
 
 const directories: string[] = [];
@@ -12,7 +13,7 @@ afterEach(async () => {
   );
 });
 
-async function fixture(defaultMode: 'auto' | '64000' | '96000' | '128000' = 'auto') {
+async function fixture(defaultMode: DiscordBitrateMode = 'auto') {
   const directory = await mkdtemp(join(tmpdir(), 'soundkeep-settings-'));
   directories.push(directory);
   const settings = new ApplicationSettingsStore(directory, defaultMode);
@@ -25,7 +26,7 @@ describe('ApplicationSettingsStore', () => {
     await settings.initialize();
     expect(settings.discordBitrateMode).toBe('auto');
 
-    for (const mode of ['64000', '96000', '128000', 'auto'] as const) {
+    for (const mode of ['64000', '96000', '128000', '384000', 'auto'] as const) {
       await settings.setDiscordBitrateMode(mode);
       const reloaded = new ApplicationSettingsStore(directory, '64000');
       await reloaded.initialize();
@@ -49,7 +50,7 @@ describe('ApplicationSettingsStore', () => {
     await rm(settings.path);
     await mkdir(settings.path);
 
-    await expect(settings.setDiscordBitrateMode('128000')).rejects.toThrow();
+    await expect(settings.setDiscordBitrateMode('384000')).rejects.toThrow();
     expect(settings.discordBitrateMode).toBe('auto');
   });
 
@@ -69,13 +70,14 @@ describe('ApplicationSettingsStore', () => {
     await Promise.all([
       settings.setDiscordBitrateMode('64000'),
       settings.setDiscordBitrateMode('96000'),
-      settings.setDiscordBitrateMode('128000')
+      settings.setDiscordBitrateMode('128000'),
+      settings.setDiscordBitrateMode('384000')
     ]);
 
-    expect(settings.discordBitrateMode).toBe('128000');
+    expect(settings.discordBitrateMode).toBe('384000');
     const persisted = JSON.parse(await readFile(settings.path, 'utf8')) as {
       discordBitrateMode: string;
     };
-    expect(persisted.discordBitrateMode).toBe('128000');
+    expect(persisted.discordBitrateMode).toBe('384000');
   });
 });

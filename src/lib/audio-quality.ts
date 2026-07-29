@@ -1,8 +1,8 @@
-export const DISCORD_BITRATE_MODES = ['auto', '64000', '96000', '128000'] as const;
+export const DISCORD_BITRATE_MODES = ['auto', '64000', '96000', '128000', '384000'] as const;
 export type DiscordBitrateMode = (typeof DISCORD_BITRATE_MODES)[number];
 
 export const DISCORD_OPUS_MIN_BITRATE = 8_000;
-export const DISCORD_OPUS_MAX_BITRATE = 128_000;
+export const DISCORD_OPUS_MAX_BITRATE = 384_000;
 export const DEFAULT_DISCORD_BITRATE_MODE: DiscordBitrateMode = 'auto';
 
 export function isDiscordBitrateMode(value: unknown): value is DiscordBitrateMode {

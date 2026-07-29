@@ -30,7 +30,7 @@
       "properties": {
         "opusBitrateMode": {
           "type": "string",
-          "enum": ["auto", "64000", "96000", "128000"]
+          "enum": ["auto", "64000", "96000", "128000", "384000"]
         },
         "maxUploadBytes": { "type": "string", "pattern": "^[0-9]+$" },
         "maxArtworkBytes": { "type": "string", "pattern": "^[0-9]+$" },
