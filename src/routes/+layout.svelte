@@ -11,7 +11,6 @@
     RefreshCw,
     Settings,
     Users,
-    Volume2,
     WandSparkles
   } from '@lucide/svelte';
   import * as Alert from '$lib/components/ui/alert';
@@ -21,10 +20,9 @@
   import { Separator } from '$lib/components/ui/separator';
   import * as Sidebar from '$lib/components/ui/sidebar';
   import { Skeleton } from '$lib/components/ui/skeleton';
-  import { Slider } from '$lib/components/ui/slider';
   import { Toaster } from '$lib/components/ui/sonner';
   import { provideSoundkeep } from '$lib/soundkeep-client.svelte';
-  import { cn } from '$lib/utils';
+  import TransportDock from '$lib/components/soundkeep/transport-dock.svelte';
 
   let { children } = $props();
 
@@ -52,18 +50,8 @@
 
   let pathname = $derived(page.url.pathname);
   let currentPage = $derived(navigation.find((item) => item.href === pathname) ?? navigation[0]);
-  let masterPercent = $state(Math.round(soundkeep.state.masterVolume * 100));
 
   onMount(() => soundkeep.start());
-
-  $effect(() => {
-    masterPercent = Math.round(soundkeep.state.masterVolume * 100);
-  });
-
-  async function changeMasterVolume(event: Event) {
-    masterPercent = Number((event.currentTarget as HTMLInputElement).value);
-    await soundkeep.changeMasterVolume(masterPercent / 100);
-  }
 
   function bitrateLabel() {
     const diagnostics = soundkeep.state.discord.audioDiagnostics;
@@ -128,26 +116,6 @@
           </Sidebar.Menu>
         </Sidebar.GroupContent>
       </Sidebar.Group>
-
-      <Sidebar.Group class="mt-auto">
-        <Sidebar.GroupLabel>Session</Sidebar.GroupLabel>
-        <Sidebar.GroupContent>
-          <div class="flex flex-col gap-3 px-2 py-2 group-data-[collapsible=icon]:hidden">
-            <div class="flex items-center justify-between gap-3">
-              <span class="text-muted-foreground text-xs">Background</span>
-              <Badge variant={soundkeep.backgroundSource ? 'success' : 'outline'}>
-                {soundkeep.backgroundSource ? 'Playing' : 'Idle'}
-              </Badge>
-            </div>
-            <div class="flex items-center justify-between gap-3">
-              <span class="text-muted-foreground text-xs">Soundboard</span>
-              <Badge variant={soundkeep.soundboardSource ? 'secondary' : 'outline'}>
-                {soundkeep.soundboardSource ? 'Playing' : 'Idle'}
-              </Badge>
-            </div>
-          </div>
-        </Sidebar.GroupContent>
-      </Sidebar.Group>
     </Sidebar.Content>
 
     <Sidebar.Footer>
@@ -174,9 +142,9 @@
     <Sidebar.Rail />
   </Sidebar.Root>
 
-  <Sidebar.Inset class="min-h-0 overflow-hidden">
+  <Sidebar.Inset data-app-shell class="min-h-0 pt-(--titlebar-height)">
     <header
-      class="bg-background/90 flex h-16 shrink-0 items-center gap-3 border-b px-4 backdrop-blur md:px-6"
+      class="bg-background/90 flex h-12 shrink-0 items-center gap-2 border-b px-3 backdrop-blur md:px-4"
     >
       <Sidebar.Trigger class="-ml-1" />
       <Separator orientation="vertical" class="h-4" />
@@ -220,19 +188,6 @@
         </span>
       </Badge>
       <Badge variant="outline" class="hidden xl:inline-flex">{bitrateLabel()}</Badge>
-      <div
-        class="bg-muted/50 hidden w-52 items-center gap-2 rounded-full border px-3 py-1.5 2xl:flex"
-      >
-        <Volume2 class="text-primary size-4" />
-        <Slider
-          bind:value={masterPercent}
-          aria-label="Master volume"
-          onchange={changeMasterVolume}
-        />
-        <span class="text-muted-foreground w-8 text-right text-xs tabular-nums">
-          {masterPercent}
-        </span>
-      </div>
       <Button
         variant="ghost"
         size="icon-sm"
@@ -244,14 +199,9 @@
       </Button>
     </header>
 
-    <div
-      class={cn(
-        'flex min-h-0 flex-1 flex-col',
-        pathname === '/' ? 'overflow-hidden' : 'overflow-y-auto'
-      )}
-    >
+    <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {#if soundkeep.initialLoading}
-        <div class="grid gap-4 p-4 md:grid-cols-2 md:p-6 xl:grid-cols-4">
+        <div class="grid gap-3 p-3 md:grid-cols-2 md:p-4 xl:grid-cols-4">
           {#each Array(4) as _, index (index)}
             <Skeleton class="h-28 w-full rounded-xl" />
           {/each}
@@ -260,7 +210,7 @@
         </div>
       {:else}
         {#if soundkeep.stateError}
-          <div class="px-4 pt-4 md:px-6 md:pt-6">
+          <div class="px-3 pt-3 md:px-4">
             <Alert.Root variant="destructive">
               <Bot />
               <Alert.Title>Live state unavailable</Alert.Title>
@@ -279,7 +229,7 @@
             </Alert.Root>
           </div>
         {:else if soundkeep.setupNeedsAttention}
-          <div class="px-4 pt-4 md:px-6 md:pt-6">
+          <div class="px-3 pt-3 md:px-4">
             <Alert.Root variant={!soundkeep.state.discord.configured ? 'destructive' : 'default'}>
               <Bot />
               <Alert.Title>Server setup needs attention</Alert.Title>
@@ -297,6 +247,8 @@
         {@render children()}
       {/if}
     </div>
+
+    <TransportDock />
   </Sidebar.Inset>
 </Sidebar.Provider>
 
