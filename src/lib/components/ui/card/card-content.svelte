@@ -9,6 +9,6 @@
   }: HTMLAttributes<HTMLDivElement> & { children?: Snippet } = $props();
 </script>
 
-<div data-slot="card-content" class={cn('p-5 pt-0', className)} {...rest}>
+<div data-slot="card-content" class={cn('px-4 pb-4', className)} {...rest}>
   {@render children?.()}
 </div>
